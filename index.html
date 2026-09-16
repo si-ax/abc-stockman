@@ -267,11 +267,15 @@
      the browser and works offline. This is here for realistic demoing;
      flagged as something to reconsider before any "true offline" build. -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<!-- Supabase client — Phase 1 of the local-storage-to-cloud migration.
+     Currently only the `animals` table reads/writes through this; every
+     other entity still lives in localStorage until its own slice lands. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16g';
+const APP_BUILD_VERSION = '2026-09-16i';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -279,6 +283,22 @@ const APP_BUILD_VERSION = '2026-09-16g';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16i',
+    date: '16 Sep 2026',
+    bullets: [
+      "Animals are now fully synced to the shared farm database \u2014 editing details, marking sold/dead/stolen/swapped, BCMS reporting, and breeding/pregnancy status all sync now, not just adding a new animal.",
+      "Everything else (weights, feed, medicine, injuries, damage, moves) is still local-only for now \u2014 that's the next piece of work."
+    ]
+  },
+  {
+    version: '2026-09-16h',
+    date: '16 Sep 2026',
+    bullets: [
+      "New: sign in with your email (a link is sent to you, no password) \u2014 this links your device to the shared farm database.",
+      "Animals you add are now saved to the shared farm database, not just this device \u2014 everyone signed in to the same farm sees them."
+    ]
+  },
   {
     version: '2026-09-16g',
     date: '16 Sep 2026',
@@ -304,6 +324,57 @@ const APP_CHANGELOG = [
     ]
   }
 ];
+
+// ---- Supabase (Phase 1: auth + the `animals` table only) ----
+// Publishable key is safe to expose client-side by design — it can't do
+// anything the Row Level Security policies on the project don't allow.
+const SUPABASE_URL = 'https://wazkqsqkondxqukcxvdr.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_mC9h-rr6K1xcM1RZChZb4w_V9zdak-P';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+let authUser = null;       // the signed-in Supabase user, once logged in
+let authFarmId = null;     // which farm that user belongs to (from farm_members)
+let authEmail = '';        // in-progress value of the login screen's email field
+let magicLinkSent = false; // true once we've asked Supabase to send the email
+let authError = null;      // last auth-related error message, if any
+
+// Looks up which farm (if any) the signed-in user belongs to, and — if
+// they belong to one — pulls that farm's animals down from Supabase into
+// the local `animals` array so the rest of the app (which still reads
+// that array synchronously everywhere) works unchanged. Only `animals`
+// is cloud-backed so far; everything else is still local until its own
+// migration slice lands.
+async function resolveFarmMembership(){
+  if(!authUser) return;
+  const { data: memberships, error: memErr } = await sb.from('farm_members').select('farm_id').eq('user_id', authUser.id).limit(1);
+  if(memErr){ authError = memErr.message; return; }
+  authFarmId = (memberships && memberships[0]) ? memberships[0].farm_id : null;
+  if(!authFarmId) return;
+  const { data: remoteAnimals, error: animErr } = await sb.from('animals').select('*').order('created_seq', {ascending:true});
+  if(animErr){ authError = animErr.message; return; }
+  animals = remoteAnimals || [];
+}
+
+// Pushes one animal's current full state up to Supabase — called after
+// any local edit, wherever authFarmId is set. There's no offline queue
+// yet (that's Phase 4), so a failed sync here doesn't block or roll back
+// the local change (the person's already seen it save), it just gets
+// logged so it's visible that this device and the shared database have
+// drifted apart until the next successful sync.
+async function syncAnimalToSupabase(a){
+  if(!authFarmId) return;
+  const { error } = await sb.from('animals').update({
+    tag_number:a.tag_number, eid:a.eid, breed_id:a.breed_id, sex:a.sex, birth_date:a.birth_date, status:a.status,
+    purchase_price:a.purchase_price, birth_weight_kg:a.birth_weight_kg, weaned_weight_kg:a.weaned_weight_kg,
+    mother_id:a.mother_id, mother_external_eid:a.mother_external_eid, father_id:a.father_id, father_external_eid:a.father_external_eid,
+    photo_data:a.photo_data, name:a.name, updated_at:a.updated_at,
+    realized_value:a.realized_value??null, realized_value_date:a.realized_value_date??null, fallen_stock_ref:a.fallen_stock_ref??null,
+    bcms_birth_reported:a.bcms_birth_reported??null, bcms_birth_reported_at:a.bcms_birth_reported_at??null,
+    bcms_death_reported:a.bcms_death_reported??null, bcms_death_reported_at:a.bcms_death_reported_at??null,
+    offspring_status:a.offspring_status??null, offspring_due_date:a.offspring_due_date??null, offspring_until_date:a.offspring_until_date??null,
+  }).eq('id', a.id);
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync '+(animalDisplayName(a))+' to the shared farm database \u2014 '+escapeHtml(error.message)+'. This device\u2019s copy is up to date but other devices won\u2019t see this change yet.</span>'); }
+}
 const BREEDS_SEED = ['Angus','Hereford','Friesian','Charolais','Limousin'];
 const FEED_TYPES_SEED = ['Hay','Straw','Water','Silage','Concentrate','Corn','Grass'];
 const MEDICINE_TYPES_SEED = [
@@ -2260,6 +2331,8 @@ function render(){
     insights:renderInsights,
     reports:renderReports, reportDetail:renderReportDetail, ask:renderAsk, breedValue:renderBreedValue,
     login:renderLogin,
+    supaLogin:renderSupaLogin,
+    supaWaiting:renderSupaWaiting,
     locked:renderLocked,
     timeline:renderTimeline,
     walkthrough:renderWalkthrough,
@@ -2294,6 +2367,48 @@ function updateSignalBadge(){
 }
 
 const DEMO_FARM_CODE='DEV0001', DEMO_PASSCODE='00000000'; // no real Farm ID/Passcode data model exists yet — these are just pre-filled demo values, not validated against anything real
+function renderSupaLogin(){
+  return `
+    <div style="display:flex;flex-direction:column;min-height:100%;">
+      <div style="border:1px solid var(--line);border-radius:14px;margin:14px;overflow:hidden;background:#fff;display:flex;flex-direction:column;flex:1;">
+        <div style="padding:32px 22px 4px;text-align:center;">
+          <div style="font-size:20px;font-weight:800;margin-bottom:10px;">aBC Stockman</div>
+          <div style="font-size:14px;color:var(--grey);">${magicLinkSent
+            ? 'Check your email \u2014 tap the link we sent to sign in. You can close this and come back once you\u2019ve tapped it.'
+            : 'Enter your email and we\u2019ll send you a link to sign in \u2014 no password needed.'}</div>
+        </div>
+        <div style="padding:22px;">
+          ${magicLinkSent ? `
+            <div style="font-size:13px;color:var(--grey);text-align:center;margin-bottom:14px;">Sent to <b style="color:var(--ink);">${escapeHtml(authEmail)}</b></div>
+            <button id="supaLoginResend" class="fullbtn" style="background:none;border:1px solid var(--line);color:var(--ink);">Use a different email</button>
+          ` : `
+            <label>Email</label>
+            <input type="email" id="supaLoginEmail" value="${escapeHtml(authEmail)}" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" style="font-size:16px;">
+            ${authError?`<div class="field-error" style="margin-top:8px;">${escapeHtml(authError)}</div>`:''}
+          `}
+        </div>
+        <div style="flex:1;"></div>
+        ${!magicLinkSent?`<div style="padding:16px 22px 22px;"><button id="supaLoginSend" class="fullbtn">Send login link</button></div>`:''}
+      </div>
+    </div>`;
+}
+function renderSupaWaiting(){
+  return `
+    <div style="display:flex;flex-direction:column;min-height:100%;">
+      <div style="border:1px solid var(--line);border-radius:14px;margin:14px;overflow:hidden;background:#fff;display:flex;flex-direction:column;flex:1;">
+        <div style="padding:32px 22px 4px;text-align:center;">
+          <div style="font-size:20px;font-weight:800;margin-bottom:10px;">Almost there</div>
+          <div style="font-size:14px;color:var(--grey);">You\u2019re signed in as <b style="color:var(--ink);">${escapeHtml(authUser?authUser.email:'')}</b>, but you haven\u2019t been added to a farm yet. Let whoever\u2019s setting this up know, then come back and refresh.</div>
+          ${authError?`<div class="field-error" style="margin-top:14px;">${escapeHtml(authError)}</div>`:''}
+        </div>
+        <div style="flex:1;"></div>
+        <div style="padding:16px 22px 22px;">
+          <button id="supaWaitingRefresh" class="fullbtn">I\u2019ve been added \u2014 refresh</button>
+          <button id="supaWaitingSignOut" class="fullbtn" style="background:none;border:1px solid var(--line);color:var(--ink);margin-top:10px;">Sign out</button>
+        </div>
+      </div>
+    </div>`;
+}
 function renderLogin(){
   const activeFarmers = farmersVets.filter(p=>p.role==='farmer' && p.active);
   const bullets=['Know your stock.','Better stock decisions.','Every animal. Every decision.','Simple livestock management.','Healthy stock. Better returns.','Confidence in every animal.'];
@@ -6928,6 +7043,7 @@ function renderModal(){
               else { animalForParent.father_id=null; animalForParent.father_external_eid=val; }
               animalForParent.updated_at=new Date().toISOString();
               await persistAll();
+              await syncAnimalToSupabase(animalForParent);
               if(isMother) { editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; }
               else { editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; }
             } else {
@@ -6959,6 +7075,7 @@ function renderModal(){
           else { animalForParent.father_id=found.id; animalForParent.father_external_eid=null; }
           animalForParent.updated_at=new Date().toISOString();
           await persistAll();
+          await syncAnimalToSupabase(animalForParent);
           if(isMother) { editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; }
           else { editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; }
         } else {
@@ -6979,6 +7096,7 @@ function renderModal(){
         animalForEid.eid=val;
         animalForEid.updated_at=new Date().toISOString();
         await persistAll();
+        await syncAnimalToSupabase(animalForEid);
         editAnimalEid=undefined;
         const headerEl=document.getElementById('editEidHeaderText');
         if(headerEl){
@@ -7070,11 +7188,13 @@ async function confirmModal(){
     events[a.id].push({event_type:'restored', from_status:a.status, to_status:'active', reason, created_at:new Date().toISOString(), farmer_id:currentFarmerId});
     a.status='active'; a.updated_at=new Date().toISOString();
     await persistAll();
+    await syncAnimalToSupabase(a);
     logMsg('Restored <b>'+(animalDisplayName(a))+'</b> to active. Reason: &ldquo;'+escapeHtml(reason)+'&rdquo;');
   } else if(modal.type==='void'){
     events[a.id].push({event_type:'voided', from_status:a.status, to_status:'voided', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId});
     a.status='voided'; a.updated_at=new Date().toISOString();
     await persistAll();
+    await syncAnimalToSupabase(a);
     logMsg('Removed <b>'+(animalDisplayName(a))+'</b> (accidental entry). This cannot be restored.');
   } else if(modal.type==='exit'){
     const wd = modal.status==='sold' ? activeWithdrawal(a.id) : null;
@@ -7113,6 +7233,7 @@ async function confirmModal(){
     a.realized_value_date=exitDate;
     if(modal.status==='dead') a.fallen_stock_ref=fallenStockRef;
     await persistAll();
+    await syncAnimalToSupabase(a);
     logMsg('Marked <b>'+(animalDisplayName(a))+'</b> as '+modal.status+' (net '+(realizedValue<0?'loss':'gain')+' of '+fmtGBP(Math.abs(realizedValue))+')'+(wd?' <span style="color:var(--red);">(overrode an active withdrawal warning)</span>':'')+'.');
   }
   modal=null;
@@ -7395,6 +7516,7 @@ function wireView(){
       a.bcms_birth_reported=e.target.checked;
       a.bcms_birth_reported_at=e.target.checked?new Date().toISOString():null;
       await persistAll();
+      await syncAnimalToSupabase(a);
       logMsg((e.target.checked?'Marked':'Unmarked')+' birth reported to BCMS for <b>'+(animalDisplayName(a))+'</b>.');
       render();
       showSaveToast('Updated');
@@ -7408,6 +7530,7 @@ function wireView(){
       a.photo_data=dataUrl;
       a.updated_at=new Date().toISOString();
       await persistAll();
+      await syncAnimalToSupabase(a);
       editAnimalPhoto=undefined;
       updatePhotoPreview('photo', dataUrl);
       showSaveToast('Updated');
@@ -7472,6 +7595,7 @@ function wireView(){
       if(editAnimalPhoto!==undefined) a.photo_data=editAnimalPhoto;
       a.updated_at=new Date().toISOString();
       await persistAll();
+      await syncAnimalToSupabase(a);
       // Clear the in-progress edit state now it's committed — otherwise a
       // leftover value here can silently leak into a *different* animal's
       // Animal Details later, on any screen that navigates there without
@@ -7493,6 +7617,7 @@ function wireView(){
       a.bcms_death_reported=true;
       a.bcms_death_reported_at=new Date().toISOString();
       await persistAll();
+      await syncAnimalToSupabase(a);
       logMsg('Marked death reported to BCMS for <b>'+(animalDisplayName(a))+'</b>.');
       render();
       showSaveToast('Updated');
@@ -7503,6 +7628,7 @@ function wireView(){
       a.bcms_death_reported=false;
       a.bcms_death_reported_at=null;
       await persistAll();
+      await syncAnimalToSupabase(a);
       logMsg('Undid death reported status for <b>'+(animalDisplayName(a))+'</b>.');
       render();
       showSaveToast('Undone');
@@ -7678,11 +7804,40 @@ function wireView(){
         breedingRecords.push({id:uuid(), animal_id:a.id, field:'mothering_ability', value:motherVal, date:today, created_at:new Date().toISOString()});
       }
       await persistAll();
+      await syncAnimalToSupabase(a);
       logMsg('Saved breeding details for <b>'+(animalDisplayName(a))+'</b>'+(statusChanged?' (status: '+status.replace('_',' ')+')':'')+'.');
       breedingStatusPick=undefined;
       breedingEasePick=undefined; breedingMotherPick=undefined; breedingOffspringExpanded=false;
       view='detail'; render();
       showSaveToast('Updated');
+    };
+  }
+  if(view==='supaLogin'){
+    const emailInput=document.getElementById('supaLoginEmail');
+    if(emailInput) emailInput.oninput=()=>{ authEmail=emailInput.value; };
+    const sendBtn=document.getElementById('supaLoginSend');
+    if(sendBtn) sendBtn.onclick=async()=>{
+      const email=(emailInput?emailInput.value:authEmail).trim();
+      if(!email){ authError='Enter an email address first.'; render(); return; }
+      sendBtn.disabled=true; sendBtn.textContent='Sending\u2026';
+      const { error } = await sb.auth.signInWithOtp({ email, options:{ emailRedirectTo: window.location.origin + window.location.pathname } });
+      if(error){ authError=error.message; render(); return; }
+      authEmail=email; authError=null; magicLinkSent=true; render();
+    };
+    const resendBtn=document.getElementById('supaLoginResend');
+    if(resendBtn) resendBtn.onclick=()=>{ magicLinkSent=false; authError=null; render(); };
+  }
+  if(view==='supaWaiting'){
+    document.getElementById('supaWaitingRefresh').onclick=async()=>{
+      authError=null;
+      await resolveFarmMembership();
+      if(authFarmId){ view = deviceFarmCode ? 'home' : 'login'; }
+      render();
+    };
+    document.getElementById('supaWaitingSignOut').onclick=async()=>{
+      await sb.auth.signOut();
+      authUser=null; authFarmId=null; magicLinkSent=false; authEmail=''; authError=null;
+      view='supaLogin'; render();
     };
   }
   if(view==='login'){
@@ -8248,15 +8403,29 @@ Rules:
       const weanedWeight = weanedWeightRaw ? parseFloat(weanedWeightRaw) : null;
       const id=uuid();
       const nextSeq = Math.max(0, ...animals.map(a=>a.created_seq||0)) + 1;
-      animals.push({
+      const newAnimal = {
         id, tag_number:tag, eid:newAnimalEid, breed_id:breedId, sex, birth_date:birthDateIso, status:'active',
         purchase_price:purchasePrice, birth_weight_kg:birthWeight, weaned_weight_kg:weanedWeight,
         mother_id:newAnimalMotherId, mother_external_eid:newAnimalMotherExternalEid, father_id:newAnimalFatherId, father_external_eid:newAnimalFatherExternalEid, photo_data:newAnimalPhoto,
         name:name||null, updated_at:new Date().toISOString(), created_seq:nextSeq
-      });
+      };
+      // Animals are Phase 1 of the Supabase migration — once signed in and
+      // linked to a farm, a new animal goes straight to the shared
+      // database instead of this device's local storage. There's no
+      // offline queue yet (that's Phase 4), so a failed save here is
+      // surfaced rather than silently kept local, since it would
+      // otherwise look saved on this device but not exist for anyone else.
+      if(authFarmId){
+        const { error: insertErr } = await sb.from('animals').insert({ ...newAnimal, farm_id: authFarmId });
+        if(insertErr){
+          errEl.textContent='Couldn\u2019t save to the farm database (check you have a signal, then try again) \u2014 '+insertErr.message;
+          return;
+        }
+      }
+      animals.push(newAnimal);
       events[id]=[{event_type:'created', from_status:null, to_status:'active', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId}];
       await persistAll();
-      logMsg('Added new animal <b>'+(name||tag)+'</b> (saved locally).');
+      logMsg('Added new animal <b>'+(name||tag)+'</b>'+(authFarmId?' (saved to the shared farm database).':' (saved locally).'));
       newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null;
       newAnimalPassportScanned=false;
       selectedId=id; view='detail'; render();
@@ -9787,7 +9956,30 @@ Rules:
 
 (async ()=>{
   await loadAll();
-  if(!deviceFarmCode){ view='login'; }
+
+  // Cloud auth gate (Phase 1) — runs before the existing local farm-pairing
+  // screen. Three states: not signed in, signed in but not yet added to a
+  // farm, or signed in and linked to a farm (in which case `animals` has
+  // just been hydrated from Supabase and the app carries on as before).
+  const { data: { session } } = await sb.auth.getSession();
+  if(session){
+    authUser=session.user;
+    await resolveFarmMembership();
+  }
+  sb.auth.onAuthStateChange(async(_event, newSession)=>{
+    authUser = newSession ? newSession.user : null;
+    if(authUser){
+      await resolveFarmMembership();
+      view = authFarmId ? (deviceFarmCode?'home':'login') : 'supaWaiting';
+    } else {
+      authFarmId=null; view='supaLogin';
+    }
+    render();
+  });
+
+  if(!authUser){ view='supaLogin'; }
+  else if(!authFarmId){ view='supaWaiting'; }
+  else if(!deviceFarmCode){ view='login'; }
   render();
   if(onlineSim) runPendingAnalyses();
 
