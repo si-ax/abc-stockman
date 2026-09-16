@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16k';
+const APP_BUILD_VERSION = '2026-09-16n';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,29 @@ const APP_BUILD_VERSION = '2026-09-16k';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16n',
+    date: '16 Sep 2026',
+    bullets: [
+      "Fodder (feed) records now sync to the shared farm database too \u2014 that was the last piece. Everything in the app now saves to the shared database, not just this device."
+    ]
+  },
+  {
+    version: '2026-09-16m',
+    date: '16 Sep 2026',
+    bullets: [
+      "Medicine records now sync to the shared farm database too \u2014 giving and removing a medicine record both sync now.",
+      "Feed is the last piece still local-only \u2014 next up."
+    ]
+  },
+  {
+    version: '2026-09-16l',
+    date: '16 Sep 2026',
+    bullets: [
+      "Farm Damage, Injuries, and Moves now sync to the shared farm database too \u2014 adding, editing, and removing all sync now.",
+      "Medicine and Feed are still local-only for now \u2014 the last two pieces of this migration."
+    ]
+  },
   {
     version: '2026-09-16k',
     date: '16 Sep 2026',
@@ -371,6 +394,24 @@ async function resolveFarmMembership(){
   const { data: remoteWeights, error: weightErr } = await sb.from('weights').select('*');
   if(weightErr){ authError = weightErr.message; return; }
   weights = remoteWeights || [];
+  const { data: remoteDamage, error: damageErr } = await sb.from('damage_records').select('*');
+  if(damageErr){ authError = damageErr.message; return; }
+  damageRecords = remoteDamage || [];
+  const { data: remoteInjuries, error: injuryErr } = await sb.from('injury_records').select('*');
+  if(injuryErr){ authError = injuryErr.message; return; }
+  injuryRecords = remoteInjuries || [];
+  const { data: remoteMoves, error: moveErr } = await sb.from('move_records').select('*');
+  if(moveErr){ authError = moveErr.message; return; }
+  moveRecords = remoteMoves || [];
+  const { data: remoteMeds, error: medErr } = await sb.from('medicine_records').select('*');
+  if(medErr){ authError = medErr.message; return; }
+  medicineRecords = remoteMeds || [];
+  const { data: remoteFeed, error: feedErr } = await sb.from('feed_records').select('*');
+  if(feedErr){ authError = feedErr.message; return; }
+  feedRecords = remoteFeed || [];
+  const { data: remoteFeedUsage, error: feedUsageErr } = await sb.from('feed_usage_records').select('*');
+  if(feedUsageErr){ authError = feedUsageErr.message; return; }
+  feedUsageRecords = remoteFeedUsage || [];
 }
 
 // Pushes one animal's current full state up to Supabase — called after
@@ -392,6 +433,78 @@ async function syncAnimalToSupabase(a){
     offspring_status:a.offspring_status??null, offspring_due_date:a.offspring_due_date??null, offspring_until_date:a.offspring_until_date??null,
   }).eq('id', a.id);
   if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync '+(animalDisplayName(a))+' to the shared farm database \u2014 '+escapeHtml(error.message)+'. This device\u2019s copy is up to date but other devices won\u2019t see this change yet.</span>'); }
+}
+
+async function syncDamageToSupabase(d){
+  if(!authFarmId) return;
+  const { error } = await sb.from('damage_records').upsert({
+    id:d.id, farm_id:authFarmId, photo_data:d.photo_data, gps:d.gps, location:d.location, summary:d.summary,
+    details:d.details, urgency:d.urgency, fixed_at:d.fixed_at, not_going_to_fix:!!d.not_going_to_fix,
+    created_at:d.created_at, farmer_id:d.farmer_id,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this damage record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+
+async function syncInjuryToSupabase(inj){
+  if(!authFarmId) return;
+  const { error } = await sb.from('injury_records').upsert({
+    id:inj.id, farm_id:authFarmId, animal_id:inj.animal_id, photo_data:inj.photo_data, body_part:inj.body_part,
+    cause:inj.cause, severity:inj.severity, notes:inj.notes, checklist:inj.checklist, recorded_at:inj.recorded_at,
+    resolved_at:inj.resolved_at, analysis_status:inj.analysis_status, ai_diagnosis:inj.ai_diagnosis,
+    ai_treatment:inj.ai_treatment, ai_confidence:inj.ai_confidence, ai_vet_recommended:inj.ai_vet_recommended,
+    analyzed_at:inj.analyzed_at, farmer_id:inj.farmer_id,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this injury record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+
+async function syncMoveToSupabase(rec){
+  if(!authFarmId) return;
+  const { error } = await sb.from('move_records').upsert({
+    id:rec.id, farm_id:authFarmId, date:rec.date, location:rec.location, reason:rec.reason, animal_ids:rec.animal_ids,
+    created_at:rec.created_at, direction:rec.direction, dest_cph:rec.dest_cph, bcms_reported:!!rec.bcms_reported,
+    bcms_reported_at:rec.bcms_reported_at, farmer_id:rec.farmer_id,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this move record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+async function deleteMoveFromSupabase(id){
+  if(!authFarmId) return;
+  const { error } = await sb.from('move_records').delete().eq('id', id);
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t remove this move from the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+
+async function syncMedicineToSupabase(r){
+  if(!authFarmId) return;
+  const { error } = await sb.from('medicine_records').upsert({
+    id:r.id, farm_id:authFarmId, animal_id:r.animal_id, medicine_type_id:r.medicine_type_id, product_name:r.product_name,
+    farmer_vet_id:r.farmer_vet_id, stock:r.stock, reason:r.reason, injury_id:r.injury_id, cost:r.cost, batch_no:r.batch_no,
+    expiry_date:r.expiry_date, animal_weight_kg:r.animal_weight_kg, dosage_amount:r.dosage_amount, dosage_unit:r.dosage_unit,
+    method_given:r.method_given, photo_data:r.photo_data, administered_at:r.administered_at, withdrawal_until:r.withdrawal_until,
+    note:r.note, farmer_id:r.farmer_id,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this medicine record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+async function deleteMedicineFromSupabase(id){
+  if(!authFarmId) return;
+  const { error } = await sb.from('medicine_records').delete().eq('id', id);
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t remove this medicine record from the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+
+async function syncFeedToSupabase(rec){
+  if(!authFarmId) return;
+  const { error } = await sb.from('feed_records').upsert({
+    id:rec.id, farm_id:authFarmId, feed_type:rec.feed_type, total_cost:rec.total_cost, sacks:rec.sacks,
+    start_date:rec.start_date, end_date:rec.end_date, supplier:rec.supplier, farmer_id:rec.farmer_id,
+    status:rec.status, using_started_at:rec.using_started_at, exhausted_at:rec.exhausted_at, deleted_at:rec.deleted_at,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this fodder record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+async function syncFeedUsageToSupabase(usageRec){
+  if(!authFarmId) return;
+  const { error } = await sb.from('feed_usage_records').upsert({
+    id:usageRec.id, farm_id:authFarmId, feed_record_id:usageRec.feed_record_id,
+    start_date:usageRec.start_date, end_date:usageRec.end_date, end_status:usageRec.end_status,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync fodder usage to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
 }
 const BREEDS_SEED = ['Angus','Hereford','Friesian','Charolais','Limousin'];
 const FEED_TYPES_SEED = ['Hay','Straw','Water','Silage','Concentrate','Corn','Grass'];
@@ -1567,8 +1680,10 @@ async function selectAnimalForMove(id){
     if(moveAnimalIds.length===0 && moveSessionRecordId){
       const idx=moveRecords.findIndex(r=>r.id===moveSessionRecordId);
       if(idx>-1) moveRecords.splice(idx,1);
+      const deletedId=moveSessionRecordId;
       moveSessionRecordId=null;
       await persistAll();
+      await deleteMoveFromSupabase(deletedId);
     } else {
       await commitMoveEntry();
     }
@@ -2280,6 +2395,7 @@ Look at the photo together with this information. Respond ONLY with JSON, no oth
     logMsg('Insights: analysis failed (&ldquo;'+e.message+'&rdquo;) &mdash; will retry once reconnected.');
   }
   await persistAll();
+  await syncInjuryToSupabase(rec);
   render();
 }
 let analysisRunning=false;
@@ -4683,6 +4799,7 @@ async function commitMoveEntry(){
   }
   moveSessionRecordId=rec.id;
   await persistAll();
+  await syncMoveToSupabase(rec);
   return isNew;
 }
 
@@ -4771,16 +4888,25 @@ function feedUsageTotalDays(recId){
 }
 function setFeedStatus(rec, status){
   const t=todayStr();
+  let usageRec;
   if(status==='using'){
-    feedUsageRecords.push({id:uuid(), feed_record_id:rec.id, start_date:t, end_date:null, end_status:null});
+    usageRec={id:uuid(), feed_record_id:rec.id, start_date:t, end_date:null, end_status:null};
+    feedUsageRecords.push(usageRec);
   } else {
     const open=feedUsageRecords.find(u=>u.feed_record_id===rec.id && u.end_date===null);
-    if(open){ open.end_date=t; open.end_status=status; }
+    if(open){ open.end_date=t; open.end_status=status; usageRec=open; }
   }
   rec.status=status;
   if(status==='using') rec.using_started_at=new Date().toISOString();
   else if(status==='exhausted') rec.exhausted_at=new Date().toISOString();
   else if(status==='stored') rec.exhausted_at=null; // clear a stale exhausted date if it's ever restored
+  // setFeedStatus is called synchronously from many places (sometimes
+  // twice in a row, for a clash pair) and its callers already handle
+  // persistAll() themselves — these two run in the background rather
+  // than being awaited here, same best-effort approach as elsewhere
+  // pending the real offline queue.
+  syncFeedToSupabase(rec);
+  if(usageRec) syncFeedUsageToSupabase(usageRec);
 }
 // Sets a fodder record to Using — but first checks whether another record
 // of the same type is already the one being fed out, since only one really
@@ -7174,8 +7300,13 @@ function renderModal(){
         }
       } else if(item.kind==='injury'){
         const idx=injuryRecords.findIndex(r=>r.id===item.ref.id); if(idx>-1) injuryRecords.splice(idx,1);
+        if(authFarmId){
+          const { error: delErr } = await sb.from('injury_records').delete().eq('id', item.ref.id);
+          if(delErr){ logMsg('<span style="color:var(--red);">Couldn\u2019t remove this injury from the shared farm database \u2014 '+escapeHtml(delErr.message)+'.</span>'); }
+        }
       } else if(item.kind==='medicine'){
         const idx=medicineRecords.findIndex(r=>r.id===item.ref.id); if(idx>-1) medicineRecords.splice(idx,1);
+        if(authFarmId){ await deleteMedicineFromSupabase(item.ref.id); }
       } else if(item.kind==='move'){
         // Deleting a move from one animal's Timeline should only take
         // THAT animal off the move — not wipe the whole move record and
@@ -7187,6 +7318,9 @@ function renderModal(){
           if(rec.animal_ids.length===0){
             const idx=moveRecords.findIndex(r=>r.id===rec.id);
             if(idx>-1) moveRecords.splice(idx,1);
+            await deleteMoveFromSupabase(rec.id);
+          } else {
+            await syncMoveToSupabase(rec);
           }
         }
       } else {
@@ -8873,6 +9007,7 @@ Rules:
       rec.bcms_reported=el.checked;
       rec.bcms_reported_at=el.checked?new Date().toISOString():null;
       await persistAll();
+      await syncMoveToSupabase(rec);
       logMsg((el.checked?'Marked':'Unmarked')+' the '+fmtShortDate(rec.date)+' move as reported to BCMS.');
       render();
       showSaveToast('Updated');
@@ -8944,8 +9079,10 @@ Rules:
       if(moveAnimalIds.length===0 && moveSessionRecordId){
         const idx=moveRecords.findIndex(r=>r.id===moveSessionRecordId);
         if(idx>-1) moveRecords.splice(idx,1);
+        const deletedId=moveSessionRecordId;
         moveSessionRecordId=null;
         await persistAll();
+        await deleteMoveFromSupabase(deletedId);
         render();
       } else {
         await commitMoveEntry();
@@ -9067,6 +9204,7 @@ Rules:
       const d=damageRecords.find(x=>x.id===el.dataset.editdamagesummary);
       d.summary=el.value.trim();
       await persistAll();
+      await syncDamageToSupabase(d);
       render();
       showSaveToast('Updated');
     });
@@ -9074,18 +9212,21 @@ Rules:
       const d=damageRecords.find(x=>x.id===el.dataset.editdamagelocation);
       d.location=el.value.trim()||null;
       await persistAll();
+      await syncDamageToSupabase(d);
       showSaveToast('Updated');
     });
     document.querySelectorAll('[data-editdamagedetails]').forEach(el=>el.onchange=async()=>{
       const d=damageRecords.find(x=>x.id===el.dataset.editdamagedetails);
       d.details=el.value.trim()||null;
       await persistAll();
+      await syncDamageToSupabase(d);
       showSaveToast('Updated');
     });
     document.querySelectorAll('[data-editdamageurgency]').forEach(btn=>btn.onclick=async()=>{
       const d=damageRecords.find(x=>x.id===btn.dataset.editdamageurgency);
       d.urgency=btn.dataset.urgency;
       await persistAll();
+      await syncDamageToSupabase(d);
       render();
       showSaveToast('Updated');
     });
@@ -9093,6 +9234,7 @@ Rules:
       wirePhotoCaptureModal('damagerow'+d.id, async(dataUrl)=>{
         d.photo_data=dataUrl;
         await persistAll();
+        await syncDamageToSupabase(d);
         render();
         showSaveToast('Updated');
       });
@@ -9102,6 +9244,7 @@ Rules:
       if(el.checked){
         d.fixed_at=new Date().toISOString();
         await persistAll();
+        await syncDamageToSupabase(d);
         logMsg('Marked farm damage &ldquo;'+escapeHtml(d.summary)+'&rdquo; as fixed.');
         expandedDamageId=null;
         render();
@@ -9114,6 +9257,7 @@ Rules:
         showConfirmModal('Remove this damage record from the list? This can\'t be undone here.', async()=>{
           d.not_going_to_fix=true;
           await persistAll();
+          await syncDamageToSupabase(d);
           logMsg('Removed farm damage &ldquo;'+escapeHtml(d.summary)+'&rdquo; (not going to fix).');
           expandedDamageId=null;
           render();
@@ -9127,6 +9271,7 @@ Rules:
       d.fixed_at=null;
       d.not_going_to_fix=false;
       await persistAll();
+      await syncDamageToSupabase(d);
       logMsg('Reactivated farm damage &ldquo;'+escapeHtml(d.summary)+'&rdquo; \u2014 back on the outstanding list.');
       expandedDamageHistoryId=null;
       render();
@@ -9188,13 +9333,15 @@ Rules:
       }
       const location=document.getElementById('damageLocation').value.trim();
       const details=document.getElementById('damageDetails').value.trim();
-      damageRecords.push({
+      const newDamage = {
         id:uuid(), photo_data:damagePhotoTemp, gps:damageGpsTemp,
         location:location||null, summary, details:details||null,
         urgency:damageUrgencyPick, fixed_at:null, not_going_to_fix:false,
         created_at:new Date().toISOString(), farmer_id:currentFarmerId
-      });
+      };
+      damageRecords.push(newDamage);
       await persistAll();
+      await syncDamageToSupabase(newDamage);
       logMsg('Logged farm damage: &ldquo;'+escapeHtml(summary)+'&rdquo; ('+damageUrgencyPick+' urgency).');
       view='damage'; expandedDamageId=null; render();
       showSaveToast('Saved');
@@ -9308,6 +9455,7 @@ Rules:
         const rec=feedRecords.find(r=>r.id===el.dataset.delfeed);
         if(rec) rec.deleted_at=new Date().toISOString();
         await persistAll();
+        if(rec) await syncFeedToSupabase(rec);
         logMsg('Deleted a fodder record.');
         render();
       });
@@ -9374,6 +9522,7 @@ Rules:
         status:'stored', using_started_at:null, exhausted_at:null};
       feedRecords.push(rec);
       await persistAll();
+      await syncFeedToSupabase(rec);
       logMsg('Logged fodder purchase: <b>'+sacks+' &times; '+escapeHtml(feedType)+'</b> at '+fmtGBPSmart(totalCost)+' total.');
       feedLastDate=date; // keep the date, ready for the next purchase
       showSaveToast('Saved');
@@ -9664,7 +9813,7 @@ Rules:
           return;
         }
       }
-      medicineRecords.push({
+      const newMed = {
         id:uuid(), animal_id:a.id, medicine_type_id:cabinetMatch?cabinetMatch.id:null, product_name:productName,
         farmer_vet_id:farmerVetIdVal,
         stock:stockVal,
@@ -9681,8 +9830,10 @@ Rules:
         administered_at:new Date().toISOString(),
         withdrawal_until: withdrawalRaw ? new Date(withdrawalRaw).toISOString() : null,
         farmer_id:currentFarmerId,
-      });
+      };
+      medicineRecords.push(newMed);
       await persistAll();
+      await syncMedicineToSupabase(newMed);
       logMsg('Logged <b>'+productName+'</b> for <b>'+(animalDisplayName(a))+'</b>'+(withdrawalRaw?', withdrawal until '+fmtDate(withdrawalRaw):' (no withdrawal period)')+'.');
       showSaveToast('Saved');
       // Keep this animal's form exactly as-is on screen for now (it may be
@@ -9868,6 +10019,7 @@ Rules:
       const inj=injuryRecords.find(x=>x.id===el.dataset.recoveredcheck);
       inj.resolved_at = el.checked ? new Date().toISOString() : null;
       await persistAll();
+      await syncInjuryToSupabase(inj);
       const a=animals.find(x=>x.id===healthTarget);
       logMsg((el.checked?'Marked recovered':'Reopened')+' an injury for <b>'+(animalDisplayName(a))+'</b>.');
       render();
@@ -9885,6 +10037,7 @@ Rules:
       if(!el.value){ el.value=inj.body_part||'head'; return; }
       inj.body_part=el.value;
       await persistAll();
+      await syncInjuryToSupabase(inj);
       render();
       showSaveToast('Body part: '+el.value.charAt(0).toUpperCase()+el.value.slice(1));
     });
@@ -9893,6 +10046,7 @@ Rules:
       if(!el.value){ el.value=inj.severity||1; return; }
       inj.severity=parseInt(el.value,10);
       await persistAll();
+      await syncInjuryToSupabase(inj);
       render();
       showSaveToast('Injury level: '+inj.severity);
     });
@@ -9901,6 +10055,7 @@ Rules:
       inj.notes=el.value.trim()||null;
       inj.cause=null; // merged into the single Cause/notes field now — avoid keeping a stale duplicate
       await persistAll();
+      await syncInjuryToSupabase(inj);
       showSaveToast(inj.notes?'Cause/notes saved':'Cause/notes cleared');
     });
     // Grows the Cause/notes box to fit whatever's actually been typed,
@@ -9919,6 +10074,7 @@ Rules:
         inj.analysis_status='pending';
         inj.ai_diagnosis=null; inj.ai_treatment=null; inj.ai_confidence=null; inj.ai_vet_recommended=null; inj.analyzed_at=null;
         await persistAll();
+        await syncInjuryToSupabase(inj);
         render();
         showSaveToast('Updated');
       });
@@ -9950,7 +10106,7 @@ Rules:
         non_weight_bearing: document.getElementById('chk-weightbearing').checked,
         hot_to_touch: document.getElementById('chk-hot').checked,
       };
-      injuryRecords.push({
+      const newInjury = {
         id:uuid(), animal_id:a.id, photo_data:injAddPhoto||null,
         body_part: bodyPartVal||null,
         cause: null,
@@ -9959,8 +10115,10 @@ Rules:
         checklist, recorded_at:new Date().toISOString(), resolved_at:null,
         analysis_status: injAddPhoto ? 'pending' : null, ai_diagnosis:null, ai_treatment:null, ai_confidence:null, ai_vet_recommended:null, analyzed_at:null,
         farmer_id:currentFarmerId,
-      });
+      };
+      injuryRecords.push(newInjury);
       await persistAll();
+      await syncInjuryToSupabase(newInjury);
       logMsg('Logged an injury for <b>'+(animalDisplayName(a))+'</b>'+(injAddPhoto?' with a photo':'')+'.');
       injAddPhoto=null;
       // Accordion behaviour: the newly-added injury becomes the one and
