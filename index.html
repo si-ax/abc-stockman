@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16n';
+const APP_BUILD_VERSION = '2026-09-16o';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,14 @@ const APP_BUILD_VERSION = '2026-09-16n';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16o',
+    date: '16 Sep 2026',
+    bullets: [
+      "Fixed a crash in passport scanning (\u201ccannot set properties of null\u201d) that could happen if you navigated away while it was still reading the photo.",
+      "The error message shown when a scan fails is now more accurate \u2014 it no longer always blames your signal."
+    ]
+  },
   {
     version: '2026-09-16n',
     date: '16 Sep 2026',
@@ -8462,15 +8470,16 @@ Rules:
             const activeBreeds=breeds.filter(b=>b.active);
             const match=activeBreeds.find(b=>b.name.toLowerCase()===String(result.breed).trim().toLowerCase())
               || activeBreeds.find(b=>String(result.breed).toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(String(result.breed).toLowerCase()));
-            if(match){ document.getElementById('f-breed').value=match.id; filled.push('Breed'); }
+            const breedSelect=document.getElementById('f-breed');
+            if(match && breedSelect){ breedSelect.value=match.id; filled.push('Breed'); }
           }
           if(result.sex==='M' || result.sex==='F'){
             const radio=document.getElementById(result.sex==='M'?'sexM':'sexF');
             if(radio){ radio.checked=true; filled.push('Sex'); }
           }
           if(result.dob && /^\d{4}-\d{2}-\d{2}$/.test(result.dob)){
-            document.getElementById('f-birth').value=result.dob;
-            filled.push('D.O.B.');
+            const birthInput=document.getElementById('f-birth');
+            if(birthInput){ birthInput.value=result.dob; filled.push('D.O.B.'); }
           }
           const tagInput=document.getElementById('f-tag');
           if(result.mgmt_id && tagInput && !tagInput.value.trim()){
@@ -8519,7 +8528,10 @@ Rules:
             showInfoModal('Read the passport photo, but couldn\u2019t find any recognisable details on it \u2014 try a clearer photo of the animal\u2019s own details page, or enter them manually.');
           }
         } catch(err){
-          showInfoModal('Couldn\u2019t read that passport (check you have a signal, then try again) \u2014 '+err.message.slice(0,150));
+          const looksLikeABug = err instanceof TypeError;
+          showInfoModal(looksLikeABug
+            ? 'Something went wrong reading that passport \u2014 try again, and if it keeps happening, avoid navigating away while it\u2019s scanning. ('+err.message.slice(0,150)+')'
+            : 'Couldn\u2019t read that passport (check you have a signal, then try again) \u2014 '+err.message.slice(0,150));
         } finally {
           hideScanningOverlay();
         }
