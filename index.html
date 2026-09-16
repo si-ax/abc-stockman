@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16p';
+const APP_BUILD_VERSION = '2026-09-16s';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -284,11 +284,31 @@ const APP_BUILD_VERSION = '2026-09-16p';
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
   {
+    version: '2026-09-16s',
+    date: '16 Sep 2026',
+    bullets: [
+      "Corrected the last passport-scan change \u2014 breed is actually printed in full on the passport (e.g. \u201cHEREFORD X\u201d for a cross), not as a short code. The scan now expects that instead."
+    ]
+  },
+  {
+    version: '2026-09-16r',
+    date: '16 Sep 2026',
+    bullets: [
+      "Passport scanning should now get the breed right more often \u2014 turns out passports print an official breed code (e.g. LIM, BRB) rather than the full name, which the scan wasn't accounting for."
+    ]
+  },
+  {
+    version: '2026-09-16q',
+    date: '16 Sep 2026',
+    bullets: [
+      "Fixed the real cause of a scan appearing to dump you back on Home mid-way through: updates used to reload the app the instant they were ready, which could land right in the middle of something. Now you get a \u201cUpdate available \u2014 tap to refresh\u201d banner instead, so it only happens when you choose."
+    ]
+  },
+  {
     version: '2026-09-16p',
     date: '16 Sep 2026',
     bullets: [
-      "If a passport scan gets interrupted before you save the animal (iPhones can silently reload the app while the camera's open), it's no longer lost \u2014 you'll be offered a Resume next time you open the app.",
-      "This can still happen with any camera use, not just passport scans \u2014 it's a known iPhone limitation with apps like this one, not something that can be fully switched off."
+      "If a passport scan gets interrupted before you save the animal, it's no longer lost \u2014 you'll be offered a Resume next time you open the app."
     ]
   },
   {
@@ -6063,7 +6083,12 @@ async function readAnimalFromPassportGemini(file){
   // (often unknown in a suckler herd) but included when it's there too —
   // both are just off-farm EID references at this point, same as if the
   // farmer had typed them into the Mother/Father picker by hand.
-  const prompt='This is a photo of a page from a UK (or EU) cattle passport for one individual animal. Extract these details if visible on this page, and reply with ONLY a single JSON object and nothing else \u2014 no markdown fences, no explanation: {"eid":"the animal\u2019s own official ear tag number, as printed (country code plus digit groups), or null if not visible","breed":"the breed name as printed, or null","sex":"M or F, or null","dob":"date of birth as YYYY-MM-DD, or null","mgmt_id":"any herd mark, management number, or name printed for this specific animal, or null","dam_eid":"the dam\u2019s (mother\u2019s) official ear tag number if printed, or null","sire_eid":"the sire\u2019s (father\u2019s) official ear tag number if printed, or null"}. Use null for anything not actually visible on this page rather than guessing. Do not include keeper/holding details or movement history.';
+  // Modern (post-2011, CPP52) UK passports are a single page. Breed is
+  // printed as an official 2-3 letter code (e.g. LIM, BRB, AA), NOT the
+  // full breed name — asked to translate it rather than return the raw
+  // code, since the app matches against full breed names configured on
+  // the farm. "X" on the end (e.g. LIMX) means a cross of that breed.
+  const prompt='This is a photo of a page from a UK (or EU) cattle passport for one individual animal. Modern UK passports (since 2011, form CPP52) are a single page; the animal\u2019s own ear tag number is usually printed in the top-right corner, formatted as a country code (e.g. UK) followed by a 6-digit herd number, then a check digit, then a 5-digit sequence number \u2014 transcribe it exactly as printed, spaces included. Breed is printed as the breed name in full (e.g. "HEREFORD"), sometimes followed by "X" or "CROSS" meaning the animal is a cross of that breed (e.g. "HEREFORD X" = Hereford Cross) \u2014 transcribe the breed exactly as printed, X/Cross suffix included, do not guess a code or translate it into anything else. Extract these details if visible on this page, and reply with ONLY a single JSON object and nothing else \u2014 no markdown fences, no explanation: {"eid":"the animal\u2019s own official ear tag number, as printed (country code plus digit groups), or null if not visible","breed":"the breed exactly as printed, X/Cross suffix included if present, or null","sex":"M or F, or null","dob":"date of birth as YYYY-MM-DD, or null","mgmt_id":"any herd mark, management number, or name printed for this specific animal, or null","dam_eid":"the dam\u2019s official ear tag number if printed \u2014 may be labelled Dam, Genetic Dam, or Birth Dam \u2014 or null","sire_eid":"the sire\u2019s (father\u2019s) official ear tag number if printed, or null \u2014 often blank/unknown, that\u2019s normal"}. Use null for anything not actually visible on this page rather than guessing. Do not include keeper/holding details or movement history.';
   const GEMINI_TIMEOUT_MS=12000;
   let lastErr;
   for(const model of GEMINI_MODEL_CANDIDATES){
@@ -10268,16 +10293,28 @@ Rules:
 })();
 </script>
 <script>
-  // Register the service worker and auto-reload once when a new version
-  // takes over — so an update doesn't quietly sit there until the app is
-  // manually force-closed and reopened.
+  // Register the service worker. When a new version takes over, DON'T
+  // reload immediately — that can silently interrupt whatever's in
+  // progress (a multi-step scan, a half-filled form), which is very
+  // likely what caused a passport scan to appear to dump the app back on
+  // Home mid-flow: a new build takes several seconds to install in the
+  // background, easily long enough to land right in the middle of a
+  // Gemini call. Instead, show a small persistent banner and let the
+  // person choose when it's safe to apply it.
   if('serviceWorker' in navigator){
     window.addEventListener('load', ()=>{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
     let swRefreshed=false;
     navigator.serviceWorker.addEventListener('controllerchange', ()=>{
       if(swRefreshed) return;
       swRefreshed=true;
-      window.location.reload();
+      const frame=document.getElementById('phoneFrame');
+      if(!frame){ window.location.reload(); return; } // shouldn't happen, but don't strand the person on a dead page
+      const banner=document.createElement('button');
+      banner.id='updateReadyBanner';
+      banner.textContent='Update available \u2014 tap to refresh';
+      banner.style.cssText='position:absolute;left:10px;right:10px;bottom:10px;z-index:60;background:var(--ink);color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25);';
+      banner.onclick=()=>{ window.location.reload(); };
+      frame.appendChild(banner);
     });
   }
 </script>
