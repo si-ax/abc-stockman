@@ -2,7 +2,7 @@
 // APP_BUILD_VERSION in index.html) — it's what tells the service worker
 // to drop the old cached files and pick up the new ones. It doesn't need
 // to match APP_BUILD_VERSION exactly, it just needs to CHANGE.
-const CACHE_NAME = 'abc-stockman-2026-09-16i';
+const CACHE_NAME = 'abc-stockman-2026-09-16k';
 
 const APP_SHELL = [
   './',

@@ -245,8 +245,8 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Phase 1 — animal core</h1>
-    <p>Add, view, and manage animal status — all running against local device storage. No server involved yet, same as your real phone's local database will work.</p>
+    <h1>aBC Stockman — pilot build</h1>
+    <p>Animals and weigh/BCS entries now sync to the shared farm database. Feed, medicine, injuries, damage, and moves still run on local device storage for now, as this migrates one piece at a time.</p>
   </div>
 
   <div class="grid">
@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16i';
+const APP_BUILD_VERSION = '2026-09-16k';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,21 @@ const APP_BUILD_VERSION = '2026-09-16i';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16k',
+    date: '16 Sep 2026',
+    bullets: [
+      "Fixed the outdated \u201cno server involved yet\u201d text above the app \u2014 leftover from before animals/weights started syncing."
+    ]
+  },
+  {
+    version: '2026-09-16j',
+    date: '16 Sep 2026',
+    bullets: [
+      "Weigh/BCS entries now sync to the shared farm database too \u2014 adding, editing, and deleting a weigh entry all sync now.",
+      "Feed, medicine, injuries, damage, and moves are still local-only for now."
+    ]
+  },
   {
     version: '2026-09-16i',
     date: '16 Sep 2026',
@@ -353,6 +368,9 @@ async function resolveFarmMembership(){
   const { data: remoteAnimals, error: animErr } = await sb.from('animals').select('*').order('created_seq', {ascending:true});
   if(animErr){ authError = animErr.message; return; }
   animals = remoteAnimals || [];
+  const { data: remoteWeights, error: weightErr } = await sb.from('weights').select('*');
+  if(weightErr){ authError = weightErr.message; return; }
+  weights = remoteWeights || [];
 }
 
 // Pushes one animal's current full state up to Supabase — called after
@@ -4635,6 +4653,10 @@ async function commitWeighEntry(silent){
     weights.push(rec);
   }
   weighSessionRecordId = rec.id;
+  if(authFarmId){
+    const { error: upsertErr } = await sb.from('weights').upsert({ ...rec, farm_id: authFarmId });
+    if(upsertErr){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this weigh entry to the shared farm database \u2014 '+escapeHtml(upsertErr.message)+'.</span>'); }
+  }
   await persistAll();
   if(!silent) render();
   return isNew;
@@ -7146,6 +7168,10 @@ function renderModal(){
       const item=modal.item;
       if(item.kind==='weight'){
         const idx=weights.findIndex(w=>w.id===item.ref.id); if(idx>-1) weights.splice(idx,1);
+        if(authFarmId){
+          const { error: delErr } = await sb.from('weights').delete().eq('id', item.ref.id);
+          if(delErr){ logMsg('<span style="color:var(--red);">Couldn\u2019t remove this weigh entry from the shared farm database \u2014 '+escapeHtml(delErr.message)+'.</span>'); }
+        }
       } else if(item.kind==='injury'){
         const idx=injuryRecords.findIndex(r=>r.id===item.ref.id); if(idx>-1) injuryRecords.splice(idx,1);
       } else if(item.kind==='medicine'){
