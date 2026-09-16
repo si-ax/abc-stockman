@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16o';
+const APP_BUILD_VERSION = '2026-09-16p';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,14 @@ const APP_BUILD_VERSION = '2026-09-16o';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16p',
+    date: '16 Sep 2026',
+    bullets: [
+      "If a passport scan gets interrupted before you save the animal (iPhones can silently reload the app while the camera's open), it's no longer lost \u2014 you'll be offered a Resume next time you open the app.",
+      "This can still happen with any camera use, not just passport scans \u2014 it's a known iPhone limitation with apps like this one, not something that can be fully switched off."
+    ]
+  },
   {
     version: '2026-09-16o',
     date: '16 Sep 2026',
@@ -6250,6 +6258,78 @@ function triggerScanCameraCapture(onPhotoTaken){
   };
   input.click();
 }
+// Fills the New Animal form from a passport-scan result — shared by the
+// live scan handler (view==='add' wiring) and the resume-after-reload
+// flow in the app boot sequence, so a scan interrupted by an iOS
+// background-reload can be recovered rather than silently lost. Assumes
+// the New Animal form is already the DOM currently rendered. Returns the
+// list of field labels actually filled in.
+function applyPassportScanResult(result){
+  const filled=[];
+  if(result.eid){
+    newAnimalEid=String(result.eid).trim();
+    const btnText=document.getElementById('enterEidBtnText');
+    if(btnText) btnText.textContent='EID: '+newAnimalEid;
+    filled.push('EID');
+  }
+  if(result.breed){
+    const activeBreeds=breeds.filter(b=>b.active);
+    const match=activeBreeds.find(b=>b.name.toLowerCase()===String(result.breed).trim().toLowerCase())
+      || activeBreeds.find(b=>String(result.breed).toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(String(result.breed).toLowerCase()));
+    const breedSelect=document.getElementById('f-breed');
+    if(match && breedSelect){ breedSelect.value=match.id; filled.push('Breed'); }
+  }
+  if(result.sex==='M' || result.sex==='F'){
+    const radio=document.getElementById(result.sex==='M'?'sexM':'sexF');
+    if(radio){ radio.checked=true; filled.push('Sex'); }
+  }
+  if(result.dob && /^\d{4}-\d{2}-\d{2}$/.test(result.dob)){
+    const birthInput=document.getElementById('f-birth');
+    if(birthInput){ birthInput.value=result.dob; filled.push('D.O.B.'); }
+  }
+  const tagInput=document.getElementById('f-tag');
+  if(result.mgmt_id && tagInput && !tagInput.value.trim()){
+    tagInput.value=String(result.mgmt_id).trim();
+    filled.push('Mgmt ID');
+  }
+  // Same rule as typing an EID into the Mother/Father picker by hand: a
+  // match on this farm links straight to that animal; anything else (no
+  // match, or off this farm entirely) is stored as an off-farm EID
+  // reference. There's no "click save twice to confirm" step here the way
+  // there is in the picker — that exists to catch a mistyped EID, which
+  // doesn't apply to a value read straight off an official document.
+  const norm=s=>s.replace(/\s+/g,'').toLowerCase();
+  if(result.dam_eid){
+    const eid=String(result.dam_eid).trim();
+    const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='F');
+    if(found){ newAnimalMotherId=found.id; newAnimalMotherExternalEid=null; }
+    else { newAnimalMotherId=null; newAnimalMotherExternalEid=eid; }
+    const btn=document.getElementById('pickMother');
+    if(btn){ btn.innerHTML=found?escapeHtml(animalDisplayName(found)):escapeHtml(eid)+'<br>(off-farm)'; btn.classList.add('set'); btn.style.background=''; btn.style.border=''; }
+    filled.push('Mother');
+  }
+  if(result.sire_eid){
+    const eid=String(result.sire_eid).trim();
+    const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='M');
+    if(found){ newAnimalFatherId=found.id; newAnimalFatherExternalEid=null; }
+    else { newAnimalFatherId=null; newAnimalFatherExternalEid=eid; }
+    const btn=document.getElementById('pickFather');
+    if(btn){ btn.innerHTML=found?escapeHtml(animalDisplayName(found)):escapeHtml(eid)+'<br>(off-farm)'; btn.classList.add('set'); btn.style.background=''; btn.style.border=''; }
+    filled.push('Father');
+  }
+  if(filled.length){
+    // Hide the row directly rather than a full re-render — a render()
+    // here would rebuild the form from scratch and wipe out everything
+    // just written straight into these fields, none of which renderAdd()
+    // itself knows how to pre-fill.
+    newAnimalPassportScanned=true;
+    const orSpan=document.getElementById('scanPassportOr');
+    const group=document.getElementById('scanPassportGroup');
+    if(orSpan) orSpan.remove();
+    if(group) group.remove();
+  }
+  return filled;
+}
 // Lightweight in-app info popup — used everywhere a plain showInfoModal() would
 // otherwise show the browser's own "This page says" chrome around it.
 // settingsSection (optional) names a Settings section key ('breeds',
@@ -8449,6 +8529,9 @@ Rules:
     });
     const passportHelpBtn=document.getElementById('passportHelp');
     if(passportHelpBtn) passportHelpBtn.onclick=()=>{ showInfoModal('\u2022 For a bought animal, photograph the passport page showing its own details \u2014 not the cover.\n\n\u2022 This reads the printed text, not the barcode itself \u2014 make sure the printed details are in shot, in focus, and the right way up.\n\n\u2022 Fills in EID, breed, sex, D.O.B., Mgmt ID, and Mother/Father (as an off-farm reference if not one of your own animals) where they\u2019re printed and visible.\n\n\u2022 Always check what\u2019s filled in before saving \u2014 a smudged or angled photo can still misread a field.'); };
+    // Fills the New Animal form from a passport-scan result — see the
+    // top-level applyPassportScanResult function (also used by the
+    // resume-after-reload flow in the app boot sequence).
     const scanPassportBtn=document.getElementById('scanPassportBtn');
     if(scanPassportBtn) scanPassportBtn.onclick=()=>{
       if(!(farmSettings.use_ai===true && farmSettings.gemini_api_key)){
@@ -8459,69 +8542,16 @@ Rules:
         showScanningOverlay('Reading passport\u2026');
         try{
           const result=await readAnimalFromPassportGemini(file);
-          const filled=[];
-          if(result.eid){
-            newAnimalEid=String(result.eid).trim();
-            const btnText=document.getElementById('enterEidBtnText');
-            if(btnText) btnText.textContent='EID: '+newAnimalEid;
-            filled.push('EID');
-          }
-          if(result.breed){
-            const activeBreeds=breeds.filter(b=>b.active);
-            const match=activeBreeds.find(b=>b.name.toLowerCase()===String(result.breed).trim().toLowerCase())
-              || activeBreeds.find(b=>String(result.breed).toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(String(result.breed).toLowerCase()));
-            const breedSelect=document.getElementById('f-breed');
-            if(match && breedSelect){ breedSelect.value=match.id; filled.push('Breed'); }
-          }
-          if(result.sex==='M' || result.sex==='F'){
-            const radio=document.getElementById(result.sex==='M'?'sexM':'sexF');
-            if(radio){ radio.checked=true; filled.push('Sex'); }
-          }
-          if(result.dob && /^\d{4}-\d{2}-\d{2}$/.test(result.dob)){
-            const birthInput=document.getElementById('f-birth');
-            if(birthInput){ birthInput.value=result.dob; filled.push('D.O.B.'); }
-          }
-          const tagInput=document.getElementById('f-tag');
-          if(result.mgmt_id && tagInput && !tagInput.value.trim()){
-            tagInput.value=String(result.mgmt_id).trim();
-            filled.push('Mgmt ID');
-          }
-          // Same rule as typing an EID into the Mother/Father picker by
-          // hand: a match on this farm links straight to that animal;
-          // anything else (no match, or off this farm entirely) is stored
-          // as an off-farm EID reference. There's no "click save twice to
-          // confirm" step here the way there is in the picker — that
-          // exists to catch a mistyped EID, which doesn't apply to a
-          // value read straight off an official document.
-          const norm=s=>s.replace(/\s+/g,'').toLowerCase();
-          if(result.dam_eid){
-            const eid=String(result.dam_eid).trim();
-            const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='F');
-            if(found){ newAnimalMotherId=found.id; newAnimalMotherExternalEid=null; }
-            else { newAnimalMotherId=null; newAnimalMotherExternalEid=eid; }
-            const btn=document.getElementById('pickMother');
-            if(btn){ btn.innerHTML=found?escapeHtml(animalDisplayName(found)):escapeHtml(eid)+'<br>(off-farm)'; btn.classList.add('set'); btn.style.background=''; btn.style.border=''; }
-            filled.push('Mother');
-          }
-          if(result.sire_eid){
-            const eid=String(result.sire_eid).trim();
-            const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='M');
-            if(found){ newAnimalFatherId=found.id; newAnimalFatherExternalEid=null; }
-            else { newAnimalFatherId=null; newAnimalFatherExternalEid=eid; }
-            const btn=document.getElementById('pickFather');
-            if(btn){ btn.innerHTML=found?escapeHtml(animalDisplayName(found)):escapeHtml(eid)+'<br>(off-farm)'; btn.classList.add('set'); btn.style.background=''; btn.style.border=''; }
-            filled.push('Father');
-          }
+          // iOS can silently reload a Home Screen PWA while the native
+          // camera app is open (memory reclaimed in the background), which
+          // wipes all in-memory state — including whatever this scan just
+          // read. Stash the raw result straight away, before touching any
+          // form fields, so a reload doesn't lose it: on next launch the
+          // app offers to resume exactly where this left off. Cleared once
+          // the animal this was for is actually saved.
+          try{ localStorage.setItem(LS_PREFIX+'pendingPassportScan', JSON.stringify({result, savedAt:Date.now()})); }catch(e){ /* best-effort only */ }
+          const filled=applyPassportScanResult(result);
           if(filled.length){
-            // Hide the row directly rather than a full re-render — a
-            // render() here would rebuild the form from scratch and wipe
-            // out everything just written straight into these fields,
-            // none of which renderAdd() itself knows how to pre-fill.
-            newAnimalPassportScanned=true;
-            const orSpan=document.getElementById('scanPassportOr');
-            const group=document.getElementById('scanPassportGroup');
-            if(orSpan) orSpan.remove();
-            if(group) group.remove();
             showSaveToast('Filled in from passport');
             logMsg('Scanned passport \u2014 filled in: <b>'+filled.join(', ')+'</b>. Please check before saving.');
           } else {
@@ -8598,6 +8628,7 @@ Rules:
       events[id]=[{event_type:'created', from_status:null, to_status:'active', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId}];
       await persistAll();
       logMsg('Added new animal <b>'+(name||tag)+'</b>'+(authFarmId?' (saved to the shared farm database).':' (saved locally).'));
+      try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
       newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null;
       newAnimalPassportScanned=false;
       selectedId=id; view='detail'; render();
@@ -10178,6 +10209,32 @@ Rules:
   else if(!deviceFarmCode){ view='login'; }
   render();
   if(onlineSim) runPendingAnalyses();
+
+  // Recover a passport scan interrupted mid-flow — see the note in
+  // applyPassportScanResult on why iOS can wipe this without warning.
+  // Only offered once we've actually landed in the normal app, not
+  // mid-login, and only if it's recent enough to still be relevant.
+  if(authUser && authFarmId && deviceFarmCode){
+    try{
+      const pendingRaw=localStorage.getItem(LS_PREFIX+'pendingPassportScan');
+      if(pendingRaw){
+        const pending=JSON.parse(pendingRaw);
+        if(Date.now()-(pending.savedAt||0) < 24*60*60*1000){
+          showConfirmModal('Adding an animal from a passport scan looks like it got interrupted before it was saved \u2014 want to pick up where it left off?', ()=>{
+            view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false;
+            render();
+            const filled=applyPassportScanResult(pending.result);
+            try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
+            if(filled.length){ showSaveToast('Resumed \u2014 filled in from passport'); logMsg('Resumed an interrupted passport scan \u2014 filled in: <b>'+filled.join(', ')+'</b>. Please check before saving.'); }
+          }, ()=>{
+            try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
+          }, 'Resume', 'Discard');
+        } else {
+          localStorage.removeItem(LS_PREFIX+'pendingPassportScan');
+        }
+      }
+    }catch(e){ /* corrupt or missing — nothing to recover */ }
+  }
 
   // Single persistent connectivity icon, shown in the same top-right spot
   // on every screen including Home — previously Home had its own separate
