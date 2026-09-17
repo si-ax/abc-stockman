@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16w';
+const APP_BUILD_VERSION = '2026-09-16x';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,14 @@ const APP_BUILD_VERSION = '2026-09-16w';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16x',
+    date: '16 Sep 2026',
+    bullets: [
+      "The \u201cinterrupted scan\u201d recovery prompt now appears as soon as you switch back to the app, not just after a full reload.",
+      "Photos (animal, injury, farm damage, medicine cabinet) now upload to proper cloud storage instead of being saved as huge blocks of text in the database \u2014 smaller, faster records, no visible change to how it works."
+    ]
+  },
   {
     version: '2026-09-16w',
     date: '16 Sep 2026',
@@ -1021,6 +1029,28 @@ function photoCaptureBlockModal(idPrefix, currentPhoto, labelText){
     <input type="file" accept="image/*" capture="environment" id="${idPrefix}InputCamera" style="display:none;">
     <input type="file" accept="image/*" id="${idPrefix}InputLibrary" style="display:none;">`;
 }
+// Uploads a captured photo (data: URL) to the shared 'photos' Storage
+// bucket and returns its public URL — used by wirePhotoCaptureModal so
+// every photo across the app (animal, injury, damage, medicine cabinet)
+// lands in Storage instead of being stored as base64 text in a database
+// column. Path is farmId/idPrefix/uuid.ext — the farmId segment is what
+// the bucket's upload policy actually checks.
+async function uploadPhotoToStorage(dataUrl, idPrefix){
+  const match=dataUrl.match(/^data:(image\/[a-zA-Z]+);base64,(.*)$/);
+  if(!match) throw new Error('not a usable image');
+  const mimeType=match[1], base64=match[2];
+  const ext=(mimeType.split('/')[1]||'jpg').replace('jpeg','jpg');
+  const safePrefix=(idPrefix||'photo').replace(/[^a-zA-Z0-9_-]/g,'');
+  const path=authFarmId+'/'+safePrefix+'/'+uuid()+'.'+ext;
+  const byteChars=atob(base64);
+  const byteNumbers=new Array(byteChars.length);
+  for(let i=0;i<byteChars.length;i++) byteNumbers[i]=byteChars.charCodeAt(i);
+  const blob=new Blob([new Uint8Array(byteNumbers)], {type:mimeType});
+  const { error } = await sb.storage.from('photos').upload(path, blob, {contentType:mimeType, upsert:false});
+  if(error) throw error;
+  const { data } = sb.storage.from('photos').getPublicUrl(path);
+  return data.publicUrl;
+}
 function wirePhotoCaptureModal(idPrefix, onCapture){
   const cameraInput=document.getElementById(idPrefix+'InputCamera');
   const libraryInput=document.getElementById(idPrefix+'InputLibrary');
@@ -1028,7 +1058,22 @@ function wirePhotoCaptureModal(idPrefix, onCapture){
     const file=input.files && input.files[0];
     if(!file) return;
     const reader=new FileReader();
-    reader.onload=()=>onCapture(reader.result);
+    reader.onload=async()=>{
+      const dataUrl=reader.result;
+      if(authFarmId){
+        showScanningOverlay('Uploading photo\u2026');
+        try{
+          const url=await uploadPhotoToStorage(dataUrl, idPrefix);
+          hideScanningOverlay();
+          onCapture(url);
+          return;
+        }catch(err){
+          hideScanningOverlay();
+          logMsg('<span style="color:var(--red);">Couldn\u2019t upload this photo to the shared farm database (check you have a signal) \u2014 kept on this device only for now.</span>');
+        }
+      }
+      onCapture(dataUrl);
+    };
     reader.readAsDataURL(file);
   };
   document.getElementById(idPrefix+'PreviewBtn').onclick=()=>{
@@ -2576,9 +2621,27 @@ async function analyzeInjury(rec){
   rec.analysis_status='analyzing';
   render();
   try{
-    const match=(rec.photo_data||'').match(/^data:(image\/[a-zA-Z]+);base64,(.*)$/);
-    if(!match) throw new Error('No usable photo on this record');
-    const media_type=match[1], base64=match[2];
+    let media_type, base64;
+    const dataMatch=(rec.photo_data||'').match(/^data:(image\/[a-zA-Z]+);base64,(.*)$/);
+    if(dataMatch){
+      media_type=dataMatch[1]; base64=dataMatch[2];
+    } else if(rec.photo_data){
+      // Now a Storage URL rather than inline base64 (see
+      // uploadPhotoToStorage) — Gemini's inline_data needs the actual
+      // bytes, not a link, so fetch it back down and re-encode.
+      const resp=await fetch(rec.photo_data);
+      if(!resp.ok) throw new Error('Couldn\u2019t fetch the photo to analyze it (status '+resp.status+')');
+      const blob=await resp.blob();
+      media_type=blob.type||'image/jpeg';
+      base64=await new Promise((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=()=>resolve(reader.result.split(',')[1]);
+        reader.onerror=()=>reject(new Error('image read failed'));
+        reader.readAsDataURL(blob);
+      });
+    } else {
+      throw new Error('No usable photo on this record');
+    }
     const a=animals.find(x=>x.id===rec.animal_id);
     const ck=rec.checklist||{};
     const promptText=`You are assisting a farmer reviewing a livestock injury photo taken in the field.
@@ -6587,7 +6650,36 @@ function applyPassportScanResult(result){
   }
   return filled;
 }
-// Lightweight in-app info popup — used everywhere a plain showInfoModal() would
+// Recover a passport scan interrupted mid-flow — see the note above on
+// why a reload (iOS memory reclaim, Android tab discard, or an app
+// update) can silently wipe an in-progress scan without warning. Called
+// once at boot, and again every time the app regains the foreground
+// (see the visibilitychange listener near the end of the boot sequence)
+// — the boot-time call alone only ever caught this after a full manual
+// reload, not the moment the person actually switches back to the app,
+// which is when it's most likely to actually matter.
+async function checkForInterruptedPassportScan(){
+  if(!(authUser && authFarmId && deviceFarmCode)) return; // only once properly signed in and paired, not mid-login
+  if(modal) return; // don't interrupt something else already on screen
+  try{
+    const pendingRaw=localStorage.getItem(LS_PREFIX+'pendingPassportScan');
+    if(!pendingRaw) return;
+    const pending=JSON.parse(pendingRaw);
+    if(Date.now()-(pending.savedAt||0) >= 24*60*60*1000){
+      localStorage.removeItem(LS_PREFIX+'pendingPassportScan');
+      return;
+    }
+    showConfirmModal('Adding an animal from a passport scan looks like it got interrupted before it was saved \u2014 want to pick up where it left off?', ()=>{
+      view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false;
+      render();
+      const filled=applyPassportScanResult(pending.result);
+      try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
+      if(filled.length){ showSaveToast('Resumed \u2014 filled in from passport'); logMsg('Resumed an interrupted passport scan \u2014 filled in: <b>'+filled.join(', ')+'</b>. Please check before saving.'); }
+    }, ()=>{
+      try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
+    }, 'Resume', 'Discard');
+  }catch(e){ /* corrupt or missing — nothing to recover */ }
+}
 // otherwise show the browser's own "This page says" chrome around it.
 // settingsSection (optional) names a Settings section key ('breeds',
 // 'medtypes', etc.) — when given, every literal occurrence of the word
@@ -10512,31 +10604,16 @@ Rules:
   render();
   if(onlineSim) runPendingAnalyses();
 
-  // Recover a passport scan interrupted mid-flow — see the note in
-  // applyPassportScanResult on why iOS can wipe this without warning.
-  // Only offered once we've actually landed in the normal app, not
-  // mid-login, and only if it's recent enough to still be relevant.
-  if(authUser && authFarmId && deviceFarmCode){
-    try{
-      const pendingRaw=localStorage.getItem(LS_PREFIX+'pendingPassportScan');
-      if(pendingRaw){
-        const pending=JSON.parse(pendingRaw);
-        if(Date.now()-(pending.savedAt||0) < 24*60*60*1000){
-          showConfirmModal('Adding an animal from a passport scan looks like it got interrupted before it was saved \u2014 want to pick up where it left off?', ()=>{
-            view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false;
-            render();
-            const filled=applyPassportScanResult(pending.result);
-            try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
-            if(filled.length){ showSaveToast('Resumed \u2014 filled in from passport'); logMsg('Resumed an interrupted passport scan \u2014 filled in: <b>'+filled.join(', ')+'</b>. Please check before saving.'); }
-          }, ()=>{
-            try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
-          }, 'Resume', 'Discard');
-        } else {
-          localStorage.removeItem(LS_PREFIX+'pendingPassportScan');
-        }
-      }
-    }catch(e){ /* corrupt or missing — nothing to recover */ }
-  }
+  await checkForInterruptedPassportScan();
+
+  // Re-check whenever the app comes back to the foreground — not just at
+  // boot. This is what actually catches an interruption in practice: the
+  // app usually keeps running (paused, not reloaded) when backgrounded
+  // for the camera, so the boot-time check alone only ever fired after a
+  // full manual reload, not the moment you switch back to the app.
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState==='visible' && !modal) checkForInterruptedPassportScan();
+  });
 
   // Single persistent connectivity icon, shown in the same top-right spot
   // on every screen including Home — previously Home had its own separate
