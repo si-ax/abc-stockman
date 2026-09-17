@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17a';
+const APP_BUILD_VERSION = '2026-09-17b';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,14 @@ const APP_BUILD_VERSION = '2026-09-17a';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17b',
+    date: '17 Sep 2026',
+    bullets: [
+      "Simplified Add Animal: \u201cEnter EID\u201d is now manual entry only, and \u201cScan passport/tag\u201d handles both a passport and a plain tag in one place \u2014 the scan option disappears once an EID's been entered either way.",
+      "Add Breed: Prime age fields now start blank and fill in automatically once you've typed the breed name and moved on \u2014 you'll see a \u201cSearching\u2026\u201d toast, then either the fields fill in or you get a \u201cNot found\u201d toast."
+    ]
+  },
   {
     version: '2026-09-17a',
     date: '17 Sep 2026',
@@ -2162,6 +2170,7 @@ let moveEnterDetailsHintSuppressed=false; // "don't show me this again this sess
 let newAnimalEid=null, newAnimalMotherId=null, newAnimalMotherExternalEid=null, newAnimalFatherId=null, newAnimalFatherExternalEid=null, newAnimalPhoto=null;
 let newAnimalPassportScanned=false; // hides "Scan passport" once it's successfully filled something — no reason to scan the same document twice for one entry
 let newAnimalIsCross=false; // the small "X" toggle next to Breed — solid when the animal's a cross of that breed, light grey otherwise. Set automatically by a passport scan (an "X"/"Cross" suffix after the breed), or tappable by hand.
+let newAnimalEidManuallyEntered=false; // true once "Enter EID" has been used to type a value by hand — hides the Scan passport/tag option on Add Animal, which only makes sense before an EID exists one way or the other.
 let editAnimalMotherId, editAnimalMotherExternalEid, editAnimalFatherId, editAnimalFatherExternalEid, editAnimalEid, editAnimalPhoto, editAnimalIsCross;
 let selectedId=null, statusFilter='active', searchTerm='', modal=null, filterBreedId=null, herdShowAllHistory=false;
 let herdSelectMode=false, herdSelectedIds=[];
@@ -5035,10 +5044,9 @@ function renderAdd(){
           <button class="eidbtn" id="enterEidBtn">${icon('pencil')}<span id="enterEidBtnText">${newAnimalEid?('EID: '+newAnimalEid):'Enter EID'}</span></button>
           <button class="helpcircle" id="eidHelp">?</button>
         </div>
-        ${newAnimalPassportScanned?'':`
-        <span id="scanPassportOr" style="color:var(--grey);font-weight:700;">or</span>
+        ${(newAnimalPassportScanned||newAnimalEidManuallyEntered)?'':`
         <div id="scanPassportGroup" style="display:flex;align-items:center;gap:8px;">
-          <button class="eidbtn" id="scanPassportBtn">${icon('camera')}<span>Scan passport</span></button>
+          <button class="eidbtn" id="scanPassportBtn">${icon('camera')}<span>Scan passport/tag</span></button>
           <button class="helpcircle" id="passportHelp">?</button>
         </div>
         `}
@@ -5938,11 +5946,10 @@ function renderSettings(){
     <div style="margin-top:10px;">
       <label>New breed name</label>
       <input type="text" id="newBreedName" placeholder="e.g. Dexter">
-      <div id="newBreedPrimeHint" style="font-size:11px;color:var(--grey);margin-top:3px;min-height:1.3em;"></div>
       <label>Min Prime age (months)</label>
-      <input type="number" id="newBreedMinPrime" value="18">
+      <input type="number" id="newBreedMinPrime" placeholder="e.g. 18">
       <label>Max Prime age (months)</label>
-      <input type="number" id="newBreedMaxPrime" value="30">
+      <input type="number" id="newBreedMaxPrime" placeholder="e.g. 30">
     </div>`;
 
   const feedTypesBody = sortedBreeds(feedTypes).map(f=>{
@@ -6769,9 +6776,7 @@ function applyPassportScanResult(result){
     // just written straight into these fields, none of which renderAdd()
     // itself knows how to pre-fill.
     newAnimalPassportScanned=true;
-    const orSpan=document.getElementById('scanPassportOr');
     const group=document.getElementById('scanPassportGroup');
-    if(orSpan) orSpan.remove();
     if(group) group.remove();
   }
   return filled;
@@ -6796,7 +6801,7 @@ async function checkForInterruptedPassportScan(){
       return;
     }
     showConfirmModal('Adding an animal from a passport scan looks like it got interrupted before it was saved \u2014 want to pick up where it left off?', ()=>{
-      view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false;
+      view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false; newAnimalEidManuallyEntered=false;
       render();
       const filled=applyPassportScanResult(pending.result);
       try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
@@ -7240,14 +7245,14 @@ function renderModal(){
           <h3 style="margin:0;font-size:20px;">EID</h3>
           <button id="modalCancel" style="background:none;border:none;color:var(--grey);width:30px;height:30px;">${icon('close')}</button>
         </div>
-        <div class="sub" style="font-size:15px;">Scan or manually enter the EID</div>
+        <div class="sub" style="font-size:15px;">${modal.context==='new'?'Enter the EID':'Scan or manually enter the EID'}</div>
         <div style="position:relative;">
           <input type="text" inputmode="numeric" id="eidModalInput" value="${(modal.current||'').replace(/"/g,'&quot;')}" placeholder="e.g. 826 0 123456 70000" style="padding-right:36px;font-size:17px;">
           <button id="eidModalClear" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);width:24px;height:24px;background:var(--red);border:none;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;padding:5px;">${icon('close')}</button>
         </div>
         <div class="field-error" id="err-eidmodal" style="margin-top:4px;font-size:14px;"></div>
         <div style="display:flex;gap:14px;justify-content:center;margin-top:16px;">
-          <button id="eidModalScan" title="Scan with camera" style="background:var(--primary);border:none;color:#fff;width:52px;height:52px;border-radius:12px;display:flex;align-items:center;justify-content:center;"><span style="width:24px;height:24px;">${icon('camera')}</span></button>
+          ${modal.context!=='new'?`<button id="eidModalScan" title="Scan with camera" style="background:var(--primary);border:none;color:#fff;width:52px;height:52px;border-radius:12px;display:flex;align-items:center;justify-content:center;"><span style="width:24px;height:24px;">${icon('camera')}</span></button>`:''}
           <button id="eidModalSave" title="Save" style="background:var(--primary);border:none;color:#fff;width:52px;height:52px;border-radius:12px;display:${hasValue?'flex':'none'};align-items:center;justify-content:center;"><span style="width:24px;height:24px;">${icon('save')}</span></button>
         </div>
       </div>`;
@@ -7786,7 +7791,8 @@ function renderModal(){
       modal={type:'pickParent', role:modal.role, context:modal.parentContext};
       renderModal();
     };
-    document.getElementById('eidModalScan').onclick=()=>{
+    const eidModalScanBtn=document.getElementById('eidModalScan');
+    if(eidModalScanBtn) eidModalScanBtn.onclick=()=>{
       const modalSnapshot=modal;
       triggerScanCameraCapture(async(file)=>{
         // Opening the camera replaced this modal's DOM (only one shows at
@@ -7920,6 +7926,7 @@ function renderModal(){
         return;
       } else {
         newAnimalEid=val;
+        newAnimalEidManuallyEntered=!!val;
         const btnText=document.getElementById('enterEidBtnText');
         if(btnText) btnText.textContent=val?('EID: '+val):'Enter EID';
       }
@@ -8160,7 +8167,7 @@ function wireView(){
     document.getElementById('home-help').onclick=()=>{ showInfoModal('Home. Click the home icon on any screen to return here.'); };
     document.getElementById('switchUserBtn').onclick=()=>{ modal={type:'switchUser'}; render(); };
     document.getElementById('home-animals').onclick=()=>{ view='herd'; statusFilter='active'; searchTerm=''; filterBreedId=null; herdShowAllHistory=false; render(); };
-    document.getElementById('home-addanimal').onclick=()=>{ view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false; render(); };
+    document.getElementById('home-addanimal').onclick=()=>{ view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false; newAnimalEidManuallyEntered=false; render(); };
     document.getElementById('home-move').onclick=()=>{
       view='move'; cameFromSummary=false; moveDate=todayStr(); moveGps=null; moveAnimalIds=[]; moveSessionRecordId=null; moveLocationVal=''; moveReasonVal=''; moveDirection=null; moveDestCphVal=''; moveHistoryScope=null; moveHistoryExpanded=false; expandedMoveHistoryId=null; moveWarningsSuppressed=false;
       render();
@@ -9127,7 +9134,7 @@ Rules:
       } else if(errBirth) errBirth.textContent='';
     });
     const passportHelpBtn=document.getElementById('passportHelp');
-    if(passportHelpBtn) passportHelpBtn.onclick=()=>{ showInfoModal('\u2022 For a bought animal, photograph the passport page showing its own details \u2014 not the cover.\n\n\u2022 This reads the printed text, not the barcode itself \u2014 make sure the printed details are in shot, in focus, and the right way up.\n\n\u2022 Fills in EID, breed, sex, D.O.B., Mgmt ID, and Mother/Father (as an off-farm reference if not one of your own animals) where they\u2019re printed and visible.\n\n\u2022 Always check what\u2019s filled in before saving \u2014 a smudged or angled photo can still misread a field.'); };
+    if(passportHelpBtn) passportHelpBtn.onclick=()=>{ showInfoModal('\u2022 Works on either a passport page or just the ear tag itself \u2014 whichever you\u2019ve got to hand.\n\n\u2022 For a bought animal\u2019s passport, photograph the page showing its own details \u2014 not the cover.\n\n\u2022 This reads the printed text, not the barcode/chip itself \u2014 make sure the printed details are in shot, in focus, and the right way up.\n\n\u2022 A tag only ever fills in EID. A passport can also fill breed, sex, D.O.B., Mgmt ID, and Mother/Father (as an off-farm reference if not one of your own animals) where they\u2019re printed and visible.\n\n\u2022 Always check what\u2019s filled in before saving \u2014 a smudged or angled photo can still misread a field.'); };
     // Fills the New Animal form from a passport-scan result — see the
     // top-level applyPassportScanResult function (also used by the
     // resume-after-reload flow in the app boot sequence).
@@ -9463,18 +9470,14 @@ Rules:
     const newBreedNameEl=document.getElementById('newBreedName');
     if(newBreedNameEl) newBreedNameEl.onblur=async()=>{
       const name=newBreedNameEl.value.trim();
-      const hintEl=document.getElementById('newBreedPrimeHint');
       const minEl=document.getElementById('newBreedMinPrime');
       const maxEl=document.getElementById('newBreedMaxPrime');
       if(!name || !minEl || !maxEl) return;
-      // Only auto-fill if these still hold the untouched defaults — never
-      // overwrite something the farmer's already typed in themselves.
-      if(minEl.value!=='18' || maxEl.value!=='30') return;
-      if(!(userSettings.use_ai===true && userSettings.gemini_api_key)){
-        if(hintEl) hintEl.textContent='';
-        return;
-      }
-      if(hintEl) hintEl.textContent='Checking typical Prime age for this breed\u2026';
+      // Only auto-fill while these are still blank — never overwrite
+      // something the farmer's already typed in themselves.
+      if(minEl.value.trim()!=='' || maxEl.value.trim()!=='') return;
+      if(!(userSettings.use_ai===true && userSettings.gemini_api_key)) return;
+      showSaveToast('Searching for typical prime age for '+name+'\u2026');
       const suggestion=await suggestBreedPrimeAgeGemini(name);
       // The name field (or the whole form) may have moved on by the time
       // this resolves — re-check everything's still there, still the
@@ -9483,14 +9486,12 @@ Rules:
       if(!stillThere || stillThere.value.trim()!==name) return;
       const minEl2=document.getElementById('newBreedMinPrime');
       const maxEl2=document.getElementById('newBreedMaxPrime');
-      const hintEl2=document.getElementById('newBreedPrimeHint');
-      if(!minEl2 || !maxEl2 || minEl2.value!=='18' || maxEl2.value!=='30') return;
+      if(!minEl2 || !maxEl2 || minEl2.value.trim()!=='' || maxEl2.value.trim()!=='') return;
       if(suggestion){
         minEl2.value=suggestion.min;
         maxEl2.value=suggestion.max;
-        if(hintEl2) hintEl2.textContent='Suggested from AI \u2014 '+suggestion.min+'\u2013'+suggestion.max+' months. Check this and adjust if needed.';
-      } else if(hintEl2){
-        hintEl2.textContent='';
+      } else {
+        showSaveToast('Not found');
       }
     };
     document.querySelectorAll('[data-toggle-feedtype]').forEach(el=>el.onclick=async()=>{
