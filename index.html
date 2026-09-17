@@ -81,7 +81,7 @@
   .savetoast.show{opacity:1;}
   /* Full-frame scanning overlay — shown the instant a tag photo is taken
      and hidden only once a result (success or failure) comes back, so a
-     farmer never sees the app go quiet for the several seconds a Gemini
+     farmer never sees the app go quiet for the several seconds a Groq
      call (plus, on failure, a Tesseract fallback + first-run engine
      download) can genuinely take. Unlike .savetoast this does NOT
      auto-dismiss on a timer — it's tied to the actual scan finishing. */
@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17b';
+const APP_BUILD_VERSION = '2026-09-17c';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,15 @@ const APP_BUILD_VERSION = '2026-09-17b';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17c',
+    date: '17 Sep 2026',
+    bullets: [
+      "Switched the AI provider from Gemini to Groq \u2014 signup only needs any email now, not a Google account, and it should feel noticeably faster for scanning and Ask.",
+      "If you already had a Gemini key saved, you'll need to add a Groq key instead in Settings > Use AI? (get one free at console.groq.com/keys).",
+      "Error messages from the AI (e.g. \u201cserver busy\u201d) are now shown in plain English instead of raw technical text."
+    ]
+  },
   {
     version: '2026-09-17b',
     date: '17 Sep 2026',
@@ -573,10 +582,10 @@ async function resolveFarmMembership(){
   if(usErr){ authError = usErr.message; return; }
   if(remoteUserSettings){
     userSettings.use_ai = !!remoteUserSettings.use_ai;
-    userSettings.gemini_api_key = remoteUserSettings.gemini_api_key||null;
+    userSettings.groq_api_key = remoteUserSettings.groq_api_key||null;
     userSettings.mute_weighing_notification = !!remoteUserSettings.mute_weighing_notification;
   } else {
-    await sb.from('user_settings').insert({ user_id:authUser.id, use_ai:!!userSettings.use_ai, gemini_api_key:userSettings.gemini_api_key||null, mute_weighing_notification:!!userSettings.mute_weighing_notification });
+    await sb.from('user_settings').insert({ user_id:authUser.id, use_ai:!!userSettings.use_ai, groq_api_key:userSettings.groq_api_key||null, mute_weighing_notification:!!userSettings.mute_weighing_notification });
   }
 
   // Animal event history — stored flat in Supabase (one row per event),
@@ -742,7 +751,7 @@ async function syncFarmSettingsToSupabase(){
 async function syncUserSettingsToSupabase(){
   if(!authUser) return;
   const { error } = await sb.from('user_settings').upsert({
-    user_id:authUser.id, use_ai:!!userSettings.use_ai, gemini_api_key:userSettings.gemini_api_key||null,
+    user_id:authUser.id, use_ai:!!userSettings.use_ai, groq_api_key:userSettings.groq_api_key||null,
     mute_weighing_notification:!!userSettings.mute_weighing_notification,
   });
   if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync your AI settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
@@ -768,7 +777,7 @@ async function syncBreedingRecordToSupabase(rec){
 }
 // Suggests a typical Prime age range for a breed the farmer's just typed
 // in — a real live web search isn't something a static, client-only app
-// can do for itself, so this reuses the same per-user Gemini key as
+// can do for itself, so this reuses the same per-user Groq key as
 // passport/tag scanning to get a reasonable general-knowledge estimate
 // instead. Deliberately presented as a starting point to check, not a
 // fact — breed maturation varies a lot by system (grass vs intensive)
@@ -776,47 +785,22 @@ async function syncBreedingRecordToSupabase(rec){
 // blindly. Returns null (quietly, no error shown) if AI isn't set up,
 // the breed isn't recognised, or the call fails — the existing 18/30
 // default is a perfectly fine fallback either way.
-async function suggestBreedPrimeAgeGemini(breedName){
-  if(!userSettings.gemini_api_key) return null;
+async function suggestBreedPrimeAgeGroq(breedName){
+  if(!userSettings.groq_api_key) return null;
   const prompt='For the cattle breed "'+breedName+'" as commonly reared in the UK, what is a typical age range in months during which a commercially finished animal of this breed is at its prime condition for sale? Base this on the breed\u2019s general reputation for maturation rate (traditional/native breeds often finish later than fast-growing continental breeds) \u2014 a general estimate is fine, this doesn\u2019t need to be precise. Reply with ONLY a JSON object and nothing else, no markdown fences, no explanation: {"min_months": a whole number, "max_months": a whole number}. If "'+breedName+'" isn\u2019t a real cattle breed you recognise, or you\u2019re not reasonably confident, reply with {"min_months": null, "max_months": null} instead of guessing.';
-  const TIMEOUT_MS=12000; // a lower-stakes suggestion — fail fast rather than making the farmer wait
-  for(const model of GEMINI_MODEL_CANDIDATES){
-    const controller=new AbortController();
-    const timeoutId=setTimeout(()=>controller.abort(), TIMEOUT_MS);
-    let resp;
-    try{
-      resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
-        method:'POST',
-        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
-        body:JSON.stringify({
-          contents:[{parts:[{text:prompt}]}],
-          generationConfig:{temperature:0.2, maxOutputTokens:100, thinkingConfig:{thinkingBudget:0}},
-        }),
-        signal:controller.signal,
-      });
-    }catch(networkErr){
-      clearTimeout(timeoutId);
-      continue; // timed out or network error — just try the next model, or give up quietly after the last one
-    }
-    clearTimeout(timeoutId);
-    if(!resp.ok){
-      const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
-      if(!worthRetrying) return null;
-      continue;
-    }
-    const json=await resp.json();
-    const text=json?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if(!text) continue;
-    try{
-      const cleaned=text.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
-      const parsed=JSON.parse(cleaned);
-      if(parsed.min_months==null || parsed.max_months==null) return null; // Gemini itself wasn't confident — leave the defaults alone
-      const min=parseInt(parsed.min_months,10), max=parseInt(parsed.max_months,10);
-      if(isNaN(min) || isNaN(max) || min<=0 || max<=min) return null;
-      return {min, max};
-    }catch(e){ return null; }
-  }
-  return null;
+  let text;
+  try{
+    // Lower-stakes suggestion, and Groq's whole point is speed — fail
+    // fast rather than making the farmer wait on something this minor.
+    text=await callGroq(prompt, null, {json:true, maxTokens:100, timeoutMs:6000});
+  }catch(e){ return null; }
+  try{
+    const parsed=parseAiJson(text);
+    if(parsed.min_months==null || parsed.max_months==null) return null; // not confident — leave the defaults alone
+    const min=parseInt(parsed.min_months,10), max=parseInt(parsed.max_months,10);
+    if(isNaN(min) || isNaN(max) || min<=0 || max<=min) return null;
+    return {min, max};
+  }catch(e){ return null; }
 }
 const BREEDS_SEED = ['Angus','Hereford','Friesian','Charolais','Limousin'];
 const FEED_TYPES_SEED = ['Hay','Straw','Water','Silage','Concentrate','Corn','Grass'];
@@ -871,7 +855,7 @@ function showSaveToast(msg){
 }
 // Persistent "reading tag…" spinner — deliberately separate from
 // showSaveToast above, which auto-hides after 2s regardless of whether the
-// scan is still running. A Gemini read plus (on failure) a Tesseract
+// scan is still running. A Groq read plus (on failure) a Tesseract
 // fallback can easily take 10-15s+, especially on a first-run device still
 // downloading the offline OCR engine, so a 2s toast made the app look
 // dead/frozen for the rest of that time. This has no timer at all — it's
@@ -1157,6 +1141,85 @@ async function uploadPhotoToStorage(dataUrl, idPrefix){
 // button (which only knows the idPrefix, not the specific onCapture
 // closure) can hand a freshly captured File to the right place.
 let photoCaptureProcessors={};
+// Turns a raw API/network error into something a farmer can actually
+// read, instead of a JSON error dump. Provider-agnostic on purpose (the
+// underlying AI provider is just an implementation detail from here).
+function friendlyAiError(err){
+  const msg=(err && err.message)||'';
+  if(/\b503\b/.test(msg) || /high demand|overloaded|temporarily unavailable/i.test(msg)) return 'The AI service is busy right now \u2014 try again in a minute or two.';
+  if(/\b429\b/.test(msg) || /quota|rate.?limit/i.test(msg)) return 'The AI service is asking to slow down (rate limit) \u2014 wait a moment and try again, or check your API key\u2019s usage limits in Settings.';
+  if(/\b401\b|\b403\b/.test(msg) || /invalid.*key|unauthoriz/i.test(msg)) return 'Your AI API key looks like it\u2019s not working \u2014 check it in Settings.';
+  if(err instanceof TypeError && /Failed to fetch|NetworkError/i.test(msg)) return 'Couldn\u2019t reach the AI service \u2014 check you have a signal, then try again.';
+  if(/timed out/i.test(msg)) return 'That took too long \u2014 check your signal, then try again.';
+  return 'Something went wrong \u2014 try again in a moment.';
+}
+// Groq — chosen over Gemini specifically for two reasons a real farmer
+// hits immediately: (1) signup only needs any email, not a Google
+// account, and (2) it's meaningfully faster, which matters when someone's
+// stood in a field waiting for a tag to be read. Vision model handles
+// photos (passport/tag/injury); the small instant text model handles
+// everything else (Ask, breed suggestions) since there's no reason to
+// pay the vision model's overhead when there's no image involved.
+const GROQ_VISION_MODEL='meta-llama/llama-4-scout-17b-16e-instruct';
+const GROQ_TEXT_MODEL='llama-3.1-8b-instant';
+const GROQ_TIMEOUT_MS=12000; // Groq's whole point is speed — no reason to wait as long as Gemini needed
+// Shared low-level caller — every AI feature in the app goes through
+// this now, instead of each duplicating its own request/retry logic.
+// imagePart is optional: {mediaType, base64} for a vision call, omit for
+// text-only. Retries once on a transient (429/5xx) failure, since a
+// second attempt costs very little given how fast Groq responds.
+async function callGroq(promptText, imagePart, opts){
+  opts=opts||{};
+  const apiKey=userSettings.groq_api_key;
+  if(!apiKey) throw new Error('No Groq API key set');
+  const model=imagePart?GROQ_VISION_MODEL:GROQ_TEXT_MODEL;
+  const content=imagePart
+    ? [{type:'text', text:promptText}, {type:'image_url', image_url:{url:'data:'+imagePart.mediaType+';base64,'+imagePart.base64}}]
+    : promptText;
+  const body={
+    model,
+    messages:[{role:'user', content}],
+    temperature: opts.temperature!=null?opts.temperature:0.2,
+    max_completion_tokens: opts.maxTokens||600,
+  };
+  if(opts.json) body.response_format={type:'json_object'};
+  let lastErr;
+  for(let attempt=0; attempt<2; attempt++){
+    const controller=new AbortController();
+    const timeoutId=setTimeout(()=>controller.abort(), opts.timeoutMs||GROQ_TIMEOUT_MS);
+    let resp;
+    try{
+      resp=await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method:'POST',
+        headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+apiKey},
+        body:JSON.stringify(body),
+        signal:controller.signal,
+      });
+    }catch(networkErr){
+      clearTimeout(timeoutId);
+      lastErr = networkErr.name==='AbortError' ? new Error('Groq timed out after '+((opts.timeoutMs||GROQ_TIMEOUT_MS)/1000)+'s') : networkErr;
+      continue;
+    }
+    clearTimeout(timeoutId);
+    if(resp.ok){
+      const json=await resp.json();
+      const text=json?.choices?.[0]?.message?.content;
+      if(!text) throw new Error('Groq returned no readable text');
+      return text;
+    }
+    const errBody=await resp.text().catch(()=>'');
+    lastErr=new Error('Groq request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
+    const worthRetrying = resp.status===429 || resp.status>=500;
+    if(!worthRetrying) throw lastErr;
+  }
+  throw lastErr;
+}
+// Parses a model's reply as JSON, tolerating markdown code fences some
+// models still wrap output in even when asked not to.
+function parseAiJson(text){
+  const cleaned=text.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
+  return JSON.parse(cleaned);
+}
 function wirePhotoCaptureModal(idPrefix, onCapture){
   const libraryInput=document.getElementById(idPrefix+'InputLibrary');
   const processFile=(file)=>{
@@ -1349,10 +1412,10 @@ let usingFeed=true, usingFeedLog=[];
 // feedRecords is now a FARM-WIDE ledger, not per-animal: [{id, feed_type, sack_price, sacks, start_date, end_date}]
 // Cost per animal is calculated (see feedCostTotal), never entered directly — see mockup Screen 19.
 let farmSettings={typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:''};
-// Per-signed-in-user, not per-farm — each person's own Gemini key has its
+// Per-signed-in-user, not per-farm — each person's own Groq key has its
 // own daily quota, so this deliberately does NOT live in farmSettings or
 // sync to other farm members. See syncUserSettingsToSupabase.
-let userSettings={use_ai:false, gemini_api_key:null, mute_weighing_notification:false};
+let userSettings={use_ai:false, groq_api_key:null, mute_weighing_notification:false};
 // ---- Device pairing / login (Farm ID + Passcode) ----
 // deviceFarmCode/deviceFarmName persist once this device is paired to a
 // farm — that's the rare "set up this device" step. currentFarmerId is the
@@ -1593,9 +1656,9 @@ async function loadAll(){
     if(farmSettings.typical_gestation_days==null) farmSettings.typical_gestation_days=283;
     if(farmSettings.cph==null) farmSettings.cph='';
     if(farmSettings.test_data_mode==null) farmSettings.test_data_mode='loaded';
-    userSettings= us?JSON.parse(us):{use_ai:false, gemini_api_key:null, mute_weighing_notification:false};
+    userSettings= us?JSON.parse(us):{use_ai:false, groq_api_key:null, mute_weighing_notification:false};
     if(userSettings.use_ai==null) userSettings.use_ai=false;
-    if(userSettings.gemini_api_key===undefined) userSettings.gemini_api_key=null;
+    if(userSettings.groq_api_key===undefined) userSettings.groq_api_key=null;
     damageRecords= dr?JSON.parse(dr):[];
     moveRecords= mv?JSON.parse(mv):[];
     farmersVets= fv?JSON.parse(fv):[];
@@ -2728,9 +2791,9 @@ function openInjuries(animalId){return injuryRecords.filter(r=>r.animal_id===ani
 
 // ================= AI INSIGHTS (Claude Vision, runs automatically once online) =================
 async function analyzeInjury(rec){
-  if(!userSettings.gemini_api_key){
+  if(!userSettings.groq_api_key){
     rec.analysis_status='failed';
-    logMsg('Insights: analysis needs a Gemini API key set up in Settings \u2014 add yours to enable this.');
+    logMsg('Insights: analysis needs a Groq API key set up in Settings \u2014 add yours to enable this.');
     await persistAll();
     await syncInjuryToSupabase(rec);
     render();
@@ -2745,8 +2808,8 @@ async function analyzeInjury(rec){
       media_type=dataMatch[1]; base64=dataMatch[2];
     } else if(rec.photo_data){
       // Now a Storage URL rather than inline base64 (see
-      // uploadPhotoToStorage) — Gemini's inline_data needs the actual
-      // bytes, not a link, so fetch it back down and re-encode.
+      // uploadPhotoToStorage) — the model needs the actual bytes, not a
+      // link, so fetch it back down and re-encode.
       const resp=await fetch(rec.photo_data);
       if(!resp.ok) throw new Error('Couldn\u2019t fetch the photo to analyze it (status '+resp.status+')');
       const blob=await resp.blob();
@@ -2773,49 +2836,10 @@ Quick check from the farmer: bleeding=${!!ck.bleeding}, cannot_put_weight_on_it=
 Look at the photo together with this information. Respond ONLY with JSON, no other text, in exactly this shape:
 {"diagnosis": "short plain-language assessment of what this looks like, 1-2 sentences", "treatment": "practical next-step advice for the farmer, 2-3 sentences, plain language, field-appropriate", "confidence": "high", "vet_recommended": true}
 (confidence must be exactly "high", "medium", or "low"; vet_recommended must be a real boolean)`;
-    // Same model-candidate/timeout/retry pattern as readAnimalFromPassportGemini
-    // and askFarmQuestionGemini — this used to call api.anthropic.com
-    // directly with no key, which only ever worked inside a Claude.ai
-    // artifact preview, not on a real deployed site like this one.
-    const GEMINI_TIMEOUT_MS=20000; // a diagnosis needs more room than a quick tag/passport read
-    let lastErr, parsed;
-    for(const model of GEMINI_MODEL_CANDIDATES){
-      const controller=new AbortController();
-      const timeoutId=setTimeout(()=>controller.abort(), GEMINI_TIMEOUT_MS);
-      let resp;
-      try{
-        resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
-          method:'POST',
-          headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
-          body:JSON.stringify({
-            contents:[{parts:[{text:promptText},{inline_data:{mime_type:media_type, data:base64}}]}],
-            generationConfig:{temperature:0.2, maxOutputTokens:500, thinkingConfig:{thinkingBudget:0}},
-          }),
-          signal:controller.signal,
-        });
-      }catch(networkErr){
-        const timedOut = networkErr.name==='AbortError';
-        lastErr = timedOut ? new Error('Gemini ('+model+') timed out after '+(GEMINI_TIMEOUT_MS/1000)+'s (weak/slow signal)') : networkErr;
-        if(!timedOut) throw lastErr;
-        continue;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      if(resp.ok){
-        const json=await resp.json();
-        const text=json?.candidates?.[0]?.content?.parts?.[0]?.text;
-        const finishReason=json?.candidates?.[0]?.finishReason;
-        if(!text) throw new Error('Gemini ('+model+') returned no readable text (finishReason: '+(finishReason||'unknown')+')');
-        const cleaned=text.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
-        try{ parsed=JSON.parse(cleaned); }catch(parseErr){ throw new Error('Gemini ('+model+') reply couldn\u2019t be read as data: \u201c'+cleaned.slice(0,120)+'\u201d'); }
-        break;
-      }
-      const errBody=await resp.text().catch(()=>'');
-      lastErr=new Error('Gemini ('+model+') request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
-      const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
-      if(!worthRetrying) throw lastErr;
-    }
-    if(!parsed) throw lastErr;
+    // a diagnosis needs more room to think than a quick tag/passport read
+    const text=await callGroq(promptText, {mediaType:media_type, base64}, {json:true, maxTokens:500, timeoutMs:20000});
+    let parsed;
+    try{ parsed=parseAiJson(text); }catch(parseErr){ throw new Error('Reply couldn\u2019t be read as data: \u201c'+text.slice(0,120)+'\u201d'); }
     rec.ai_diagnosis=parsed.diagnosis||null;
     rec.ai_treatment=parsed.treatment||null;
     rec.ai_confidence=parsed.confidence||null;
@@ -6080,10 +6104,10 @@ function renderSettings(){
           <div style="font-size:13px;color:var(--grey);margin-top:8px;">Turns on the "Ask" feature in Reports \u2014 lets you type or speak a question and get an answer using your own farm records, plus general farming knowledge. Also used for enhanced tag reading \u2014 when scanning an EID tag, this is tried first and reads angled, worn, or stylised tags far better than the built-in offline reader (which is still used as an automatic fallback if there's no signal or the request fails, so tag scanning always still works either way). Off by default. You'll be limited to your own usage allowance per day; the AI provider only sees your question (for Ask) or the tag photo (for tag reading), plus a summary of your records needed to answer it, nothing more.</div>
           ${userSettings.use_ai===true?`
           <div style="border-top:1px solid var(--line);margin:14px 0 0;padding-top:14px;">
-            <label style="margin-top:0;">Gemini API key</label>
-            <input type="text" id="geminiApiKey" placeholder="Paste your key here" value="${userSettings.gemini_api_key?escapeHtml(userSettings.gemini_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
-            <div style="font-size:13px;color:var(--grey);margin-top:8px;">Free to get from Google AI Studio, with a daily usage allowance (that allowance is shared across every scan/question made on this key, so is worth keeping an eye on if several people share one). The key is stored only on this device and sent only to Google.</div>
-            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--link);">Get a Gemini API key from Google AI Studio &rarr;</a>
+            <label style="margin-top:0;">Groq API key</label>
+            <input type="text" id="groqApiKey" placeholder="Paste your key here" value="${userSettings.groq_api_key?escapeHtml(userSettings.groq_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <div style="font-size:13px;color:var(--grey);margin-top:8px;">Free to get, no credit card needed \u2014 sign up with any email (a Google account isn't required), with a daily usage allowance (that allowance is shared across every scan/question made on this key, so is worth keeping an eye on if several people share one). The key is stored only on this device and sent only to Groq.</div>
+            <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--link);">Get a Groq API key from console.groq.com &rarr;</a>
           </div>`:''}
         </div>`:''}
       </div>
@@ -6326,23 +6350,14 @@ async function readEidFromPhotoTesseract(file, statusEl){
   const { data:{ text } }=await worker.recognize(processed);
   return extractEidFromOcrText(text);
 }
-// Same read, via the Gemini vision API instead of the offline reader —
+// Same read, via the Groq vision API instead of the offline reader —
 // genuinely reads the image rather than pattern-matching character shapes,
 // so handles angled/worn/stylised tags far better. Requires the farmer's
-// own Gemini API key (Settings > Use AI?) and a live connection;
+// own Groq API key (Settings > Use AI?) and a live connection;
 // throws on any failure so the caller can fall back cleanly rather than
 // silently returning a wrong answer.
-// Google renames/retires Flash models often (this app has already hit one
-// retirement mid-project) — gemini-flash-latest is Google's own
-// self-updating alias for exactly this reason, so try that first. It's not
-// 100% risk-free itself (occasionally points to an experimental release,
-// and Google's docs note it can be re-pointed with 2 weeks' notice), so
-// gemini-3.6-flash — the current GA/stable release as of Sept 2026 — is
-// kept as a pinned second attempt if the alias specifically 404s. Worth
-// revisiting this pinned fallback occasionally as models keep moving.
-const GEMINI_MODEL_CANDIDATES=['gemini-flash-latest', 'gemini-3.6-flash'];
-async function readEidFromPhotoGemini(file, statusEl){
-  if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
+async function readEidFromPhotoGroq(file, statusEl){
+  if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
   if(statusEl){ statusEl.style.display='block'; statusEl.style.color='var(--grey)'; statusEl.textContent='Reading tag\u2026'; }
   updateScanningOverlay('Reading tag\u2026');
   const base64=await new Promise((resolve,reject)=>{
@@ -6353,7 +6368,7 @@ async function readEidFromPhotoGemini(file, statusEl){
   });
   // Prompt is deliberately specific about the OFFICIAL printed structure
   // (per DEFRA/BCMS/gov.scot ear tag specs), not just "read the digits" —
-  // giving Gemini the real shape to expect measurably improves reads of
+  // giving the model the real shape to expect measurably improves reads of
   // angled/worn tags AND photos of a screen/photo of a tag (moire/glare
   // confuses generic OCR far more than a model that knows what it's
   // looking for). Since 1 Jan 2000 UK cattle tags print as: two-letter
@@ -6366,93 +6381,28 @@ async function readEidFromPhotoGemini(file, statusEl){
   // text and gets silently dropped by the word-length filter downstream —
   // one of the most common ways a genuinely OK read still returns nothing.
   const prompt='This is a photo of a UK/EU bovine (cattle) ear tag — it may be at an angle, worn, on a curved surface, or itself a photo of a tag shown on a screen/photo. Official UK ear tags (since 1 Jan 2000) print as: a two-letter country code (UK, GB, or XI for Northern Ireland), then a 6-digit herd number, then a second 6-digit group made up of a check digit plus the animal\u2019s 5-digit individual number — for example "UK 123456 700002". Some older or replacement tags may not exactly match this pattern; read what is actually printed either way. Read ONLY the printed country code and digit groups exactly as shown on the tag itself, ignoring any crown/logo graphic, extra management-info text, scratches, plastic stud, or background. If any single digit is smudged or unclear, give your single best guess for that digit rather than leaving it out or describing it in words — never omit a digit. Reply with ONLY the country code (if visible) followed by the digit groups exactly as printed, separated by single spaces, and nothing else — no explanation, no punctuation, no extra words.';
-  const GEMINI_TIMEOUT_MS=10000; // a farmer with a weak signal shouldn't be
-  // left staring at "Reading tag..." for the 30-60s a browser's own default
-  // timeout can take before giving up — bail out and fall back to the
-  // offline reader well before that becomes the frustrating part.
-  let lastErr;
-  for(const model of GEMINI_MODEL_CANDIDATES){
-    // Newer "Auth key" format keys (the ones starting AQ. rather than
-    // AIza) need to go in the x-goog-api-key header rather than a ?key=
-    // query param — the query-param style is the older convention and
-    // doesn't reliably authenticate an Auth key.
-    let resp;
-    const controller=new AbortController();
-    const timeoutId=setTimeout(()=>controller.abort(), GEMINI_TIMEOUT_MS);
-    let timedOut=false;
-    try{
-      resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
-        method:'POST',
-        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
-        body:JSON.stringify({
-          contents:[{parts:[{text:prompt},{inline_data:{mime_type:file.type||'image/jpeg', data:base64}}]}],
-          // thinkingBudget:0 turns off "thinking" for this model family —
-          // reading a tag doesn't need reasoning, and leaving thinking on
-          // was the actual root cause of tags not being read at all: with
-          // maxOutputTokens this low, a thinking model spends the whole
-          // budget on its internal reasoning and has zero tokens left to
-          // write the answer, coming back with an EMPTY text field and
-          // finishReason MAX_TOKENS — which looks exactly like "Gemini
-          // couldn't read the tag" but is really "Gemini never got to
-          // answer". maxOutputTokens is bumped up too, as a second safety
-          // margin, since not every candidate model necessarily honours
-          // thinkingBudget:0 (unsupported models should just ignore the
-          // field rather than erroring, but this keeps things working
-          // either way).
-          generationConfig:{temperature:0, maxOutputTokens:300, thinkingConfig:{thinkingBudget:0}},
-        }),
-        signal:controller.signal,
-      });
-    }catch(networkErr){
-      timedOut = networkErr.name==='AbortError';
-      lastErr = timedOut
-        ? new Error('Gemini ('+model+') timed out after '+(GEMINI_TIMEOUT_MS/1000)+'s (weak/slow signal)')
-        : networkErr;
-      // A hard connection failure (no signal at all) won't fix itself by
-      // trying a different model name — but a timeout specifically means
-      // the connection worked and the server was just slow, which the
-      // other model might not be, so that one IS worth a second try.
-      if(!timedOut) throw lastErr;
-      continue;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-    if(resp.ok){
-      const json=await resp.json();
-      const text=json?.candidates?.[0]?.content?.parts?.[0]?.text;
-      const finishReason=json?.candidates?.[0]?.finishReason;
-      if(!text) throw new Error('Gemini ('+model+') returned no readable text (finishReason: '+(finishReason||'unknown')+')');
-      const digits=extractEidFromOcrText(text);
-      // IMPORTANT: this used to silently return null here on a parse miss,
-      // which the caller treated as an ordinary (non-error) empty result —
-      // so the farmer only ever saw "couldn't read a tag number from that
-      // photo" with no clue Gemini had actually returned something. That
-      // hid the real failure mode: Gemini often DOES read the tag fine but
-      // in a shape extractEidFromOcrText doesn't recognise (extra words,
-      // an unexpected separator, digit groups outside the 4+ digit filter,
-      // etc). Throwing here instead surfaces the raw text in the on-screen
-      // error (via geminiError below), which is what's needed to tell
-      // "Gemini genuinely can't read this tag" apart from "Gemini read it
-      // but our parser choked on the reply" — two very different bugs.
-      if(!digits) throw new Error('Gemini ('+model+') read the text \u201c'+text.trim().replace(/\s+/g,' ').slice(0,80)+'\u201d but a tag number couldn\u2019t be parsed out of it');
-      return digits;
-    }
-    const errBody=await resp.text().catch(()=>'');
-    lastErr=new Error('Gemini ('+model+') request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
-    // Worth trying the next candidate on: 404 (this model's gone), 429
-    // (rate-limited — the other model may have separate quota), or any
-    // 5xx (temporary server-side trouble, like the 503 that first exposed
-    // this gap — that's model-load related, not something a different
-    // model name is guaranteed to share). NOT worth retrying on 400/401/
-    // 403 — those are request-format or key problems that would fail
-    // identically on every model, so a second call would just waste time
-    // confirming the same failure twice.
-    const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
-    if(!worthRetrying) throw lastErr;
-  }
-  throw lastErr;
+  // A farmer with a weak signal shouldn't be left staring at "Reading
+  // tag..." for the 30-60s a browser's own default timeout can take
+  // before giving up — bail out and fall back to the offline reader well
+  // before that becomes the frustrating part. Groq's whole point is
+  // speed, so this can be tighter than the old timeout was.
+  const text=await callGroq(prompt, {mediaType:file.type||'image/jpeg', base64}, {maxTokens:300, timeoutMs:8000});
+  const digits=extractEidFromOcrText(text);
+  // IMPORTANT: this used to silently return null here on a parse miss,
+  // which the caller treated as an ordinary (non-error) empty result —
+  // so the farmer only ever saw "couldn't read a tag number from that
+  // photo" with no clue the model had actually returned something. That
+  // hid the real failure mode: the model often DOES read the tag fine but
+  // in a shape extractEidFromOcrText doesn't recognise (extra words,
+  // an unexpected separator, digit groups outside the 4+ digit filter,
+  // etc). Throwing here instead surfaces the raw text in the on-screen
+  // error (via aiError below), which is what's needed to tell
+  // "the model genuinely can't read this tag" apart from "it read it
+  // but our parser choked on the reply" — two very different bugs.
+  if(!digits) throw new Error('Read the text \u201c'+text.trim().replace(/\s+/g,' ').slice(0,80)+'\u201d but a tag number couldn\u2019t be parsed out of it');
+  return digits;
 }
-// Main entry point every scan flow calls. Tries Gemini first when a key's
+// Main entry point every scan flow calls. Tries Groq first when a key's
 // configured — falls straight back to the offline Tesseract reader on ANY
 // failure (no key, no signal, bad response, rate limit, whatever) so a
 // scan never just breaks; it only ever gets quietly less accurate. Returns
@@ -6464,10 +6414,10 @@ async function readEidFromPhotoGemini(file, statusEl){
 // breed, sex, DOB, mgmt/herd ID, dam/sire EID) — structured multi-field
 // extraction like this genuinely needs a vision model's judgement, not
 // just OCR, so unlike tag scanning there's no offline Tesseract fallback:
-// without a Gemini key this feature just isn't available, and the caller
+// without a Groq key this feature just isn't available, and the caller
 // says so up front.
-async function readAnimalFromPassportGemini(file){
-  if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
+async function readAnimalFromPassportGroq(file){
+  if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
   updateScanningOverlay('Reading passport\u2026');
   const base64=await new Promise((resolve,reject)=>{
     const reader=new FileReader();
@@ -6483,118 +6433,35 @@ async function readAnimalFromPassportGemini(file){
   // both are just off-farm EID references at this point, same as if the
   // farmer had typed them into the Mother/Father picker by hand.
   // Modern (post-2011, CPP52) UK passports are a single page. Breed is
-  // printed as an official 2-3 letter code (e.g. LIM, BRB, AA), NOT the
-  // full breed name — asked to translate it rather than return the raw
-  // code, since the app matches against full breed names configured on
-  // the farm. "X" on the end (e.g. LIMX) means a cross of that breed.
+  // printed as the breed name in full, not a code.
   const prompt='This is a photo of a page from a UK (or EU) cattle passport for one individual animal. Modern UK passports (since 2011, form CPP52) are a single page; the animal\u2019s own ear tag number is usually printed in the top-right corner, formatted as a country code (e.g. UK) followed by a 6-digit herd number, then a check digit, then a 5-digit sequence number \u2014 transcribe it exactly as printed, spaces included. Breed is printed as the breed name in full (e.g. "HEREFORD"), sometimes followed by "X" or "CROSS" meaning the animal is a cross of that breed (e.g. "HEREFORD X" = Hereford Cross) \u2014 transcribe the breed exactly as printed, X/Cross suffix included, do not guess a code or translate it into anything else. Extract these details if visible on this page, and reply with ONLY a single JSON object and nothing else \u2014 no markdown fences, no explanation: {"eid":"the animal\u2019s own official ear tag number, as printed (country code plus digit groups), or null if not visible","breed":"the breed exactly as printed, X/Cross suffix included if present, or null","sex":"M or F, or null","dob":"date of birth as YYYY-MM-DD, or null","mgmt_id":"any herd mark, management number, or name printed for this specific animal, or null","dam_eid":"the dam\u2019s official ear tag number if printed \u2014 may be labelled Dam, Genetic Dam, or Birth Dam \u2014 or null","sire_eid":"the sire\u2019s (father\u2019s) official ear tag number if printed, or null \u2014 often blank/unknown, that\u2019s normal"}. Use null for anything not actually visible on this page rather than guessing. Do not include keeper/holding details or movement history.';
-  const GEMINI_TIMEOUT_MS=12000;
-  let lastErr;
-  for(const model of GEMINI_MODEL_CANDIDATES){
-    const controller=new AbortController();
-    const timeoutId=setTimeout(()=>controller.abort(), GEMINI_TIMEOUT_MS);
-    let timedOut=false;
-    let resp;
-    try{
-      resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
-        method:'POST',
-        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
-        body:JSON.stringify({
-          contents:[{parts:[{text:prompt},{inline_data:{mime_type:file.type||'image/jpeg', data:base64}}]}],
-          generationConfig:{temperature:0, maxOutputTokens:500, thinkingConfig:{thinkingBudget:0}},
-        }),
-        signal:controller.signal,
-      });
-    }catch(networkErr){
-      timedOut = networkErr.name==='AbortError';
-      lastErr = timedOut
-        ? new Error('Gemini ('+model+') timed out after '+(GEMINI_TIMEOUT_MS/1000)+'s (weak/slow signal)')
-        : networkErr;
-      if(!timedOut) throw lastErr;
-      continue;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-    if(resp.ok){
-      const json=await resp.json();
-      const text=json?.candidates?.[0]?.content?.parts?.[0]?.text;
-      const finishReason=json?.candidates?.[0]?.finishReason;
-      if(!text) throw new Error('Gemini ('+model+') returned no readable text (finishReason: '+(finishReason||'unknown')+')');
-      const cleaned=text.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
-      let parsed;
-      try{ parsed=JSON.parse(cleaned); }catch(parseErr){ throw new Error('Gemini ('+model+') reply couldn\u2019t be read as data: \u201c'+cleaned.slice(0,120)+'\u201d'); }
-      return parsed;
-    }
-    const errBody=await resp.text().catch(()=>'');
-    lastErr=new Error('Gemini ('+model+') request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
-    const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
-    if(!worthRetrying) throw lastErr;
-  }
-  throw lastErr;
+  const text=await callGroq(prompt, {mediaType:file.type||'image/jpeg', base64}, {json:true, maxTokens:500});
+  try{ return parseAiJson(text); }
+  catch(parseErr){ throw new Error('Groq reply couldn\u2019t be read as data: \u201c'+text.slice(0,120)+'\u201d'); }
 }
-// Same JSON-completion pattern as readAnimalFromPassportGemini, but
-// text-only (no inline_data) — used by the "Ask" report to run the
-// farmer's own Gemini key instead of the sandbox-only Claude endpoint,
-// so Ask actually works once this app is used outside a Claude preview.
-async function askFarmQuestionGemini(promptText){
-  if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
-  const GEMINI_TIMEOUT_MS=20000; // answers need more room than a single tag read
-  let lastErr;
-  for(const model of GEMINI_MODEL_CANDIDATES){
-    const controller=new AbortController();
-    const timeoutId=setTimeout(()=>controller.abort(), GEMINI_TIMEOUT_MS);
-    let timedOut=false;
-    let resp;
-    try{
-      resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
-        method:'POST',
-        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
-        body:JSON.stringify({
-          contents:[{parts:[{text:promptText}]}],
-          generationConfig:{temperature:0.2, maxOutputTokens:1024, thinkingConfig:{thinkingBudget:0}},
-        }),
-        signal:controller.signal,
-      });
-    }catch(networkErr){
-      timedOut = networkErr.name==='AbortError';
-      lastErr = timedOut
-        ? new Error('Gemini ('+model+') timed out after '+(GEMINI_TIMEOUT_MS/1000)+'s (weak/slow signal)')
-        : networkErr;
-      if(!timedOut) throw lastErr;
-      continue;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-    if(resp.ok){
-      const json=await resp.json();
-      const text=json?.candidates?.[0]?.content?.parts?.[0]?.text;
-      const finishReason=json?.candidates?.[0]?.finishReason;
-      if(!text) throw new Error('Gemini ('+model+') returned no readable text (finishReason: '+(finishReason||'unknown')+')');
-      const cleaned=text.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
-      let parsed;
-      try{ parsed=JSON.parse(cleaned); }catch(parseErr){ throw new Error('Gemini ('+model+') reply couldn\u2019t be read as data: \u201c'+cleaned.slice(0,120)+'\u201d'); }
-      return parsed;
-    }
-    const errBody=await resp.text().catch(()=>'');
-    lastErr=new Error('Gemini ('+model+') request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
-    const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
-    if(!worthRetrying) throw lastErr;
-  }
-  throw lastErr;
+// Same JSON-completion pattern as readAnimalFromPassportGroq, but
+// text-only — used by the "Ask" report to run the farmer's own Groq key
+// instead of the sandbox-only Claude endpoint, so Ask actually works
+// once this app is used outside a Claude preview.
+async function askFarmQuestionGroq(promptText){
+  if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
+  const text=await callGroq(promptText, null, {json:true, maxTokens:1024, timeoutMs:20000});
+  try{ return parseAiJson(text); }
+  catch(parseErr){ throw new Error('Groq reply couldn\u2019t be read as data: \u201c'+text.slice(0,120)+'\u201d'); }
 }
 async function readEidFromPhoto(file, statusEl){
-  if(userSettings.use_ai===true && userSettings.gemini_api_key){
+  if(userSettings.use_ai===true && userSettings.groq_api_key){
     try{
-      const digits=await readEidFromPhotoGemini(file, statusEl);
-      return {digits, engineUsed:'gemini'};
+      const digits=await readEidFromPhotoGroq(file, statusEl);
+      return {digits, engineUsed:'groq'};
     }catch(e){
-      logMsg('Gemini tag read failed, falling back to offline reader: '+e.message);
-      updateScanningOverlay('Gemini unavailable \u2014 trying offline reader\u2026');
+      logMsg('AI tag read failed, falling back to offline reader: '+e.message);
+      updateScanningOverlay('AI unavailable \u2014 trying offline reader\u2026');
       try{
         const digits=await readEidFromPhotoTesseract(file, statusEl);
-        return {digits, engineUsed:'tesseract', geminiError:e.message};
+        return {digits, engineUsed:'tesseract', aiError:e.message};
       }catch(e2){
-        return {digits:null, engineUsed:'tesseract', engineError:e2.message, geminiError:e.message};
+        return {digits:null, engineUsed:'tesseract', engineError:e2.message, aiError:e.message};
       }
     }
   }
@@ -6653,12 +6520,12 @@ function performTagScan(mode, statusElId){
         // Tells the farmer (and, when they describe it back, us) exactly
         // which reader was actually in play, not just "it didn't work" —
         // that distinction used to be invisible outside the internal log.
-        // Includes the actual Gemini error text (truncated) rather than
+        // Includes the actual AI error text (truncated) rather than
         // just "it failed", so a report-back gives the real status/reason
         // immediately instead of needing another round to dig it out.
-        let engineNote = result.engineUsed==='gemini' ? ' (read via Gemini)'
-          : result.geminiError ? ' (Gemini failed \u2014 '+result.geminiError.slice(0,150)+' \u2014 then fell back to the offline reader, which also couldn\u2019t read it)'
-          : (userSettings.use_ai===true && userSettings.gemini_api_key) ? '' : ' (offline reader \u2014 AI/Gemini key not set up)';
+        let engineNote = result.engineUsed==='groq' ? ' (read via AI)'
+          : result.aiError ? ' (AI reader failed \u2014 '+result.aiError.slice(0,150)+' \u2014 then fell back to the offline reader, which also couldn\u2019t read it)'
+          : (userSettings.use_ai===true && userSettings.groq_api_key) ? '' : ' (offline reader \u2014 AI key not set up)';
         const msg='Couldn\u2019t read a tag number from that photo'+engineNote+' \u2014 try again with better light/focus, or enter the EID manually.';
         if(statusEl){ statusEl.style.color='var(--red)'; statusEl.textContent=msg; } else showInfoModal(msg);
         return;
@@ -7823,8 +7690,8 @@ function renderModal(){
             // real diagnostic detail needs to actually be shown, not just
             // hinted at. Mirrors the detail level of the main scan flow.
             freshInput.placeholder='Couldn\u2019t read tag \u2014 enter manually';
-            if(result.geminiError){
-              showInfoModal('Couldn\u2019t read a tag number from that photo (Gemini failed \u2014 '+result.geminiError.slice(0,150)+' \u2014 then fell back to the offline reader, which also couldn\u2019t read it) \u2014 try again with better light/focus, or enter the EID manually.');
+            if(result.aiError){
+              showInfoModal('Couldn\u2019t read a tag number from that photo (AI reader failed \u2014 '+result.aiError.slice(0,150)+' \u2014 then fell back to the offline reader, which also couldn\u2019t read it) \u2014 try again with better light/focus, or enter the EID manually.');
             }
           }
         } catch(err){
@@ -8929,7 +8796,7 @@ function wireView(){
     document.getElementById('breedvalue-help').onclick=()=>{ showInfoModal('Every time a breed\u2019s £/kg is changed in Settings, it\u2019s added here rather than just overwritten \u2014 so you can see how it\u2019s moved over time.'); };
   }
   if(view==='ask'){
-    document.getElementById('ask-help').onclick=()=>{ showInfoModal('Type or dictate a question about your own farm records \u2014 even things not shown in an existing report. E.g. \u201cWhich animal has had the most injuries in the past 12 months?\u201d\n\nNeeds a Gemini API key set up in Settings > Use AI?.'); };
+    document.getElementById('ask-help').onclick=()=>{ showInfoModal('Type or dictate a question about your own farm records \u2014 even things not shown in an existing report. E.g. \u201cWhich animal has had the most injuries in the past 12 months?\u201d\n\nNeeds a Groq API key set up in Settings > Use AI?.'); };
     const questionInput=document.getElementById('askQuestionInput');
     questionInput.oninput=(e)=>{ askQuestionText=e.target.value; };
     const askStatus=document.getElementById('askStatus');
@@ -8954,7 +8821,7 @@ function wireView(){
       if(!question){ showInfoModal('Type or dictate a question first.'); return; }
       askQuestionText=question; askLoading=true; askAnswer=null; askError=null; render();
       try{
-        if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
+        if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
         const context=buildFarmDataContext();
         const promptText=`You are answering a beef farmer's question about their own farm records, using ONLY the JSON data below plus general farming/animal husbandry knowledge where genuinely relevant (e.g. explaining a term, or general advice). Never invent data that isn't in the JSON — if the data needed to answer isn't there, say so plainly.
 
@@ -8969,12 +8836,12 @@ Rules:
 - "records" should only list specific matching animals/items when the question is asking to find, list, or count specific things (e.g. "which animals..."). Otherwise leave it as an empty array.
 - Never include more than 20 entries in "records". If more than 20 genuinely match, list the first 20 and set "more_available" to true; otherwise false.
 - Keep each entry short, e.g. "A-1021 (Hereford)".`;
-        const parsed=await askFarmQuestionGemini(promptText);
+        const parsed=await askFarmQuestionGroq(promptText);
         askAnswer={ answer:parsed.answer||'', records:(parsed.records||[]).slice(0,20), more_available:!!parsed.more_available };
       }catch(e){
-        askError = userSettings.gemini_api_key
-          ? 'Couldn\u2019t get an answer: '+e.message
-          : 'Couldn\u2019t get an answer \u2014 add a Gemini API key in Settings > Use AI? first.';
+        askError = userSettings.groq_api_key
+          ? friendlyAiError(e)
+          : 'Couldn\u2019t get an answer \u2014 add a Groq API key in Settings > Use AI? first.';
       }
       askLoading=false;
       render();
@@ -9140,14 +9007,14 @@ Rules:
     // resume-after-reload flow in the app boot sequence).
     const scanPassportBtn=document.getElementById('scanPassportBtn');
     if(scanPassportBtn) scanPassportBtn.onclick=()=>{
-      if(!(userSettings.use_ai===true && userSettings.gemini_api_key)){
-        showInfoModal('Scanning a passport needs AI turned on with a Gemini API key set up in Settings \u2014 unlike tag scanning, there\u2019s no offline fallback for reading several fields off a document.', 'useai');
+      if(!(userSettings.use_ai===true && userSettings.groq_api_key)){
+        showInfoModal('Scanning a passport needs AI turned on with a Groq API key set up in Settings \u2014 unlike tag scanning, there\u2019s no offline fallback for reading several fields off a document.', 'useai');
         return;
       }
       triggerScanCameraCapture(async(file)=>{
         showScanningOverlay('Reading passport\u2026');
         try{
-          const result=await readAnimalFromPassportGemini(file);
+          const result=await readAnimalFromPassportGroq(file);
           // iOS can silently reload a Home Screen PWA while the native
           // camera app is open (memory reclaimed in the background), which
           // wipes all in-memory state — including whatever this scan just
@@ -9164,10 +9031,10 @@ Rules:
             showInfoModal('Read the passport photo, but couldn\u2019t find any recognisable details on it \u2014 try a clearer photo of the animal\u2019s own details page, or enter them manually.');
           }
         } catch(err){
-          const looksLikeABug = err instanceof TypeError;
+          const looksLikeABug = err instanceof TypeError && /Cannot (set|read)/i.test(err.message||'');
           showInfoModal(looksLikeABug
-            ? 'Something went wrong reading that passport \u2014 try again, and if it keeps happening, avoid navigating away while it\u2019s scanning. ('+err.message.slice(0,150)+')'
-            : 'Couldn\u2019t read that passport (check you have a signal, then try again) \u2014 '+err.message.slice(0,150));
+            ? 'Something went wrong reading that passport \u2014 try again, and if it keeps happening, avoid navigating away while it\u2019s scanning.'
+            : friendlyAiError(err));
         } finally {
           hideScanningOverlay();
         }
@@ -9344,12 +9211,12 @@ Rules:
     if(useAiYesEl) useAiYesEl.onchange=async()=>{ userSettings.use_ai=true; await persistAll(); await syncUserSettingsToSupabase(); logMsg('AI (Ask) turned on.'); render(); showSaveToast('Updated'); };
     const useAiNoEl=document.getElementById('useAiNo');
     if(useAiNoEl) useAiNoEl.onchange=async()=>{ userSettings.use_ai=false; await persistAll(); await syncUserSettingsToSupabase(); logMsg('AI (Ask) turned off.'); render(); showSaveToast('Updated'); };
-    const geminiKeyEl=document.getElementById('geminiApiKey');
-    if(geminiKeyEl) geminiKeyEl.onchange=async()=>{
-      userSettings.gemini_api_key = geminiKeyEl.value.trim() || null;
+    const groqKeyEl=document.getElementById('groqApiKey');
+    if(groqKeyEl) groqKeyEl.onchange=async()=>{
+      userSettings.groq_api_key = groqKeyEl.value.trim() || null;
       await persistAll();
       await syncUserSettingsToSupabase();
-      logMsg(userSettings.gemini_api_key ? 'Gemini API key saved.' : 'Gemini API key removed \u2014 tag scans will use the built-in offline reader only.');
+      logMsg(userSettings.groq_api_key ? 'Groq API key saved.' : 'Groq API key removed \u2014 tag scans will use the built-in offline reader only.');
       showSaveToast('Updated');
     };
     const testDataClearEl=document.getElementById('testDataClear');
@@ -9476,9 +9343,9 @@ Rules:
       // Only auto-fill while these are still blank — never overwrite
       // something the farmer's already typed in themselves.
       if(minEl.value.trim()!=='' || maxEl.value.trim()!=='') return;
-      if(!(userSettings.use_ai===true && userSettings.gemini_api_key)) return;
+      if(!(userSettings.use_ai===true && userSettings.groq_api_key)) return;
       showSaveToast('Searching for typical prime age for '+name+'\u2026');
-      const suggestion=await suggestBreedPrimeAgeGemini(name);
+      const suggestion=await suggestBreedPrimeAgeGroq(name);
       // The name field (or the whole form) may have moved on by the time
       // this resolves — re-check everything's still there, still the
       // same breed, and still untouched before writing anything.
@@ -10912,8 +10779,8 @@ Rules:
   // progress (a multi-step scan, a half-filled form), which is very
   // likely what caused a passport scan to appear to dump the app back on
   // Home mid-flow: a new build takes several seconds to install in the
-  // background, easily long enough to land right in the middle of a
-  // Gemini call. Instead, show a small persistent banner and let the
+  // background, easily long enough to land right in the middle of an
+  // AI call. Instead, show a small persistent banner and let the
   // person choose when it's safe to apply it.
   if('serviceWorker' in navigator){
     window.addEventListener('load', ()=>{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
