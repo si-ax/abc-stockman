@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16s';
+const APP_BUILD_VERSION = '2026-09-16t';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,13 @@ const APP_BUILD_VERSION = '2026-09-16s';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16t',
+    date: '16 Sep 2026',
+    bullets: [
+      "New: an \u201cX\u201d toggle next to Breed on Add Animal and Animal Details, for cross-bred animals. Grey when off, solid when on \u2014 tap to set it by hand, or a passport scan sets it automatically when it reads an \u201cX\u201d/\u201cCross\u201d on the breed."
+    ]
+  },
   {
     version: '2026-09-16s',
     date: '16 Sep 2026',
@@ -467,6 +474,7 @@ async function syncAnimalToSupabase(a){
     bcms_birth_reported:a.bcms_birth_reported??null, bcms_birth_reported_at:a.bcms_birth_reported_at??null,
     bcms_death_reported:a.bcms_death_reported??null, bcms_death_reported_at:a.bcms_death_reported_at??null,
     offspring_status:a.offspring_status??null, offspring_due_date:a.offspring_due_date??null, offspring_until_date:a.offspring_until_date??null,
+    is_cross:!!a.is_cross,
   }).eq('id', a.id);
   if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync '+(animalDisplayName(a))+' to the shared farm database \u2014 '+escapeHtml(error.message)+'. This device\u2019s copy is up to date but other devices won\u2019t see this change yet.</span>'); }
 }
@@ -1826,7 +1834,8 @@ let moveWarningsSuppressed=false; // "don't alert for any other animals in this 
 let moveEnterDetailsHintSuppressed=false; // "don't show me this again this session" — deliberately NEVER reset by a fresh move session; only a full page reload clears it
 let newAnimalEid=null, newAnimalMotherId=null, newAnimalMotherExternalEid=null, newAnimalFatherId=null, newAnimalFatherExternalEid=null, newAnimalPhoto=null;
 let newAnimalPassportScanned=false; // hides "Scan passport" once it's successfully filled something — no reason to scan the same document twice for one entry
-let editAnimalMotherId, editAnimalMotherExternalEid, editAnimalFatherId, editAnimalFatherExternalEid, editAnimalEid, editAnimalPhoto;
+let newAnimalIsCross=false; // the small "X" toggle next to Breed — solid when the animal's a cross of that breed, light grey otherwise. Set automatically by a passport scan (an "X"/"Cross" suffix after the breed), or tappable by hand.
+let editAnimalMotherId, editAnimalMotherExternalEid, editAnimalFatherId, editAnimalFatherExternalEid, editAnimalEid, editAnimalPhoto, editAnimalIsCross;
 let selectedId=null, statusFilter='active', searchTerm='', modal=null, filterBreedId=null, herdShowAllHistory=false;
 let herdSelectMode=false, herdSelectedIds=[];
 
@@ -4559,6 +4568,7 @@ function renderAnimalDetails(){
   if(editAnimalMotherExternalEid===undefined) editAnimalMotherExternalEid=a.mother_external_eid||null;
   if(editAnimalFatherId===undefined) editAnimalFatherId=a.father_id||null;
   if(editAnimalFatherExternalEid===undefined) editAnimalFatherExternalEid=a.father_external_eid||null;
+  if(editAnimalIsCross===undefined) editAnimalIsCross=!!a.is_cross;
   const mother = editAnimalMotherId ? animals.find(x=>x.id===editAnimalMotherId) : null;
   const motherLabel = mother ? animalDisplayName(mother) : (editAnimalMotherExternalEid ? editAnimalMotherExternalEid+'<br>(off-farm)' : 'Mother');
   const father = editAnimalFatherId ? animals.find(x=>x.id===editAnimalFatherId) : null;
@@ -4591,7 +4601,8 @@ function renderAnimalDetails(){
       <div class="field-error" id="err-tag" style="padding:0 2px;"></div>
       `}
 
-      <div class="formrow"><label>Breed</label><div class="formctrl"><select id="f-breed">${sortedBreeds(breeds.filter(b=>b.active)).map(b=>`<option value="${b.id}" ${b.id===a.breed_id?'selected':''}>${b.name}</option>`).join('')}</select></div></div>
+      <div class="formrow"><label>Breed</label><div class="formctrl" style="display:flex;align-items:center;gap:8px;"><select id="f-breed" style="flex:1;">${sortedBreeds(breeds.filter(b=>b.active)).map(b=>`<option value="${b.id}" ${b.id===a.breed_id?'selected':''}>${b.name}</option>`).join('')}</select><button type="button" id="breedCrossToggle" title="Cross-bred \u2014 tap to toggle" style="width:36px;height:36px;flex-shrink:0;border-radius:8px;border:1px solid var(--line);background:#fff;font-weight:800;font-size:16px;cursor:pointer;color:${editAnimalIsCross?'var(--ink)':'var(--grey-light)'};">X</button></div></div>
+      <div style="font-size:11px;color:var(--grey);padding:0 2px;margin-top:-6px;">X = cross-bred. Matches the passport if scanned, or tap to set by hand.</div>
 
       <div class="formrow"><label>Sex</label><div class="formctrl radiogroup">
         <input type="radio" name="f-sex" id="sexM" value="M" ${a.sex==='M'?'checked':''}><label for="sexM">M</label>
@@ -4659,7 +4670,8 @@ function renderAdd(){
       <div class="formrow"><label>Mgmt ID</label><div class="formctrl"><input type="text" id="f-tag" placeholder="e.g. A-1101"></div></div>
       <div class="field-error" id="err-tag" style="padding:0 2px;"></div>
 
-      <div class="formrow"><label>Breed</label><div class="formctrl"><select id="f-breed">${(()=>{ const activeBreeds=sortedBreeds(breeds.filter(b=>b.active)); return (activeBreeds.length===1?'':'<option value="" selected>\u2014 Select \u2014</option>')+activeBreeds.map(b=>`<option value="${b.id}" ${activeBreeds.length===1?'selected':''}>${b.name}</option>`).join(''); })()}</select></div></div>
+      <div class="formrow"><label>Breed</label><div class="formctrl" style="display:flex;align-items:center;gap:8px;"><select id="f-breed" style="flex:1;">${(()=>{ const activeBreeds=sortedBreeds(breeds.filter(b=>b.active)); return (activeBreeds.length===1?'':'<option value="" selected>\u2014 Select \u2014</option>')+activeBreeds.map(b=>`<option value="${b.id}" ${activeBreeds.length===1?'selected':''}>${b.name}</option>`).join(''); })()}</select><button type="button" id="breedCrossToggle" title="Cross-bred \u2014 tap to toggle" style="width:36px;height:36px;flex-shrink:0;border-radius:8px;border:1px solid var(--line);background:#fff;font-weight:800;font-size:16px;cursor:pointer;color:${newAnimalIsCross?'var(--ink)':'var(--grey-light)'};">X</button></div></div>
+      <div style="font-size:11px;color:var(--grey);padding:0 2px;margin-top:-6px;">X = cross-bred. Filled in automatically from a scanned passport, or tap to set by hand.</div>
       <div class="field-error" id="err-breed" style="padding:0 2px;"></div>
 
       <div class="formrow"><label>Sex</label><div class="formctrl radiogroup">
@@ -6298,11 +6310,24 @@ function applyPassportScanResult(result){
     filled.push('EID');
   }
   if(result.breed){
+    const rawBreed=String(result.breed).trim();
+    // Passports print a trailing "X" (or "Cross") to mean cross-bred —
+    // strip it before matching against the farm's breed list, and use it
+    // to set the separate cross toggle instead, rather than trying to
+    // match a breed literally named e.g. "Hereford X".
+    const crossSuffix=rawBreed.match(/\s*(x|cross)\s*$/i);
+    const breedForMatching = crossSuffix ? rawBreed.slice(0, crossSuffix.index).trim() : rawBreed;
     const activeBreeds=breeds.filter(b=>b.active);
-    const match=activeBreeds.find(b=>b.name.toLowerCase()===String(result.breed).trim().toLowerCase())
-      || activeBreeds.find(b=>String(result.breed).toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(String(result.breed).toLowerCase()));
+    const match=activeBreeds.find(b=>b.name.toLowerCase()===breedForMatching.toLowerCase())
+      || activeBreeds.find(b=>breedForMatching.toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(breedForMatching.toLowerCase()));
     const breedSelect=document.getElementById('f-breed');
     if(match && breedSelect){ breedSelect.value=match.id; filled.push('Breed'); }
+    if(crossSuffix){
+      newAnimalIsCross=true;
+      const crossBtn=document.getElementById('breedCrossToggle');
+      if(crossBtn) crossBtn.style.color='var(--ink)';
+      filled.push('Cross-bred (X)');
+    }
   }
   if(result.sex==='M' || result.sex==='F'){
     const radio=document.getElementById(result.sex==='M'?'sexM':'sexF');
@@ -7382,7 +7407,7 @@ function renderModal(){
       modal=null;
       if(item.kind==='status'){
         if(item.ref.event_type==='created'){
-          editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined;
+          editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined; editAnimalIsCross=undefined;
           view='animalDetails';
         }
         else { view='archive'; }
@@ -7604,7 +7629,7 @@ function wireView(){
     document.getElementById('home-help').onclick=()=>{ showInfoModal('Home. Click the home icon on any screen to return here.'); };
     document.getElementById('switchUserBtn').onclick=()=>{ modal={type:'switchUser'}; render(); };
     document.getElementById('home-animals').onclick=()=>{ view='herd'; statusFilter='active'; searchTerm=''; filterBreedId=null; herdShowAllHistory=false; render(); };
-    document.getElementById('home-addanimal').onclick=()=>{ view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; render(); };
+    document.getElementById('home-addanimal').onclick=()=>{ view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false; render(); };
     document.getElementById('home-move').onclick=()=>{
       view='move'; cameFromSummary=false; moveDate=todayStr(); moveGps=null; moveAnimalIds=[]; moveSessionRecordId=null; moveLocationVal=''; moveReasonVal=''; moveDirection=null; moveDestCphVal=''; moveHistoryScope=null; moveHistoryExpanded=false; expandedMoveHistoryId=null; moveWarningsSuppressed=false;
       render();
@@ -7740,7 +7765,7 @@ function wireView(){
   if(view==='detail'){
     document.querySelector('[data-back]').onclick=()=>{view='herd'; render();};
     document.getElementById('sum-details').onclick=()=>{
-      editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined;
+      editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined; editAnimalIsCross=undefined;
       view='animalDetails'; render();
     };
     document.getElementById('sum-breeding').onclick=()=>{
@@ -7776,6 +7801,11 @@ function wireView(){
   }
   if(view==='animalDetails'){
     wireGoKeySubmit('saveDetails');
+    const breedCrossToggleEdit=document.getElementById('breedCrossToggle');
+    if(breedCrossToggleEdit) breedCrossToggleEdit.onclick=()=>{
+      editAnimalIsCross=!editAnimalIsCross;
+      breedCrossToggleEdit.style.color = editAnimalIsCross ? 'var(--ink)' : 'var(--grey-light)';
+    };
     document.getElementById('editEidBtn').onclick=()=>{
       const cur = editAnimalEid!==undefined ? editAnimalEid : animals.find(x=>x.id===selectedId).eid;
       modal={type:'editEid', current:cur, context:'edit'};
@@ -7866,6 +7896,7 @@ function wireView(){
       if(editAnimalFatherId!==undefined) a.father_id=editAnimalFatherId;
       if(editAnimalFatherExternalEid!==undefined) a.father_external_eid=editAnimalFatherExternalEid;
       if(editAnimalPhoto!==undefined) a.photo_data=editAnimalPhoto;
+      a.is_cross=!!editAnimalIsCross;
       a.updated_at=new Date().toISOString();
       await persistAll();
       await syncAnimalToSupabase(a);
@@ -7873,7 +7904,7 @@ function wireView(){
       // leftover value here can silently leak into a *different* animal's
       // Animal Details later, on any screen that navigates there without
       // its own reset (this is what caused the EID mix-up bug).
-      editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined;
+      editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined; editAnimalIsCross=undefined;
       logMsg('Saved details for <b>'+(animalDisplayName(a))+'</b>.');
       view='detail'; render();
       showSaveToast('Updated');
@@ -7933,7 +7964,7 @@ function wireView(){
         moveWarningsSuppressed=false;
         view='move'; cameFromSummary=false; moveHistoryScope=null; moveHistoryExpanded=true; expandedMoveHistoryId=id;
       } else if(kind==='birth'){
-        editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined;
+        editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined; editAnimalIsCross=undefined;
         selectedId=id; cameFromSummary=false; view='animalDetails';
       } else if(kind==='death'){
         selectedId=id; cameFromSummary=false; view='archive';
@@ -8344,7 +8375,7 @@ function wireView(){
       el.onclick=(e)=>{
         e.stopPropagation();
         selectedId=el.dataset.gotoanimaldetails; cameFromSummary=false; view='animalDetails';
-        editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined;
+        editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined; editAnimalIsCross=undefined;
         render();
       };
     });
@@ -8539,6 +8570,11 @@ Rules:
       modal={type:'editEid', current:newAnimalEid, context:'new'};
       renderModal();
     };
+    const breedCrossToggleAdd=document.getElementById('breedCrossToggle');
+    if(breedCrossToggleAdd) breedCrossToggleAdd.onclick=()=>{
+      newAnimalIsCross=!newAnimalIsCross;
+      breedCrossToggleAdd.style.color = newAnimalIsCross ? 'var(--ink)' : 'var(--grey-light)';
+    };
     document.getElementById('eidHelp').onclick=()=>{ showInfoModal('EID is the electronic tag number (from an RFID/BLE reader). Mgmt ID is the tag number you use day to day \u2014 they can be different.'); };
     // Clamp immediately on change rather than only rejecting at Save —
     // catches a future date typed directly into the field (max= on the
@@ -8634,7 +8670,7 @@ Rules:
         id, tag_number:tag, eid:newAnimalEid, breed_id:breedId, sex, birth_date:birthDateIso, status:'active',
         purchase_price:purchasePrice, birth_weight_kg:birthWeight, weaned_weight_kg:weanedWeight,
         mother_id:newAnimalMotherId, mother_external_eid:newAnimalMotherExternalEid, father_id:newAnimalFatherId, father_external_eid:newAnimalFatherExternalEid, photo_data:newAnimalPhoto,
-        name:name||null, updated_at:new Date().toISOString(), created_seq:nextSeq
+        name:name||null, updated_at:new Date().toISOString(), created_seq:nextSeq, is_cross:!!newAnimalIsCross
       };
       // Animals are Phase 1 of the Supabase migration — once signed in and
       // linked to a farm, a new animal goes straight to the shared
@@ -9006,7 +9042,7 @@ Rules:
       else if(nav==='timeline-bcstrend'){ timelineKindFilter='bcstrend'; cameFromSummary=true; view='timeline'; }
       else if(nav==='medicine'){ healthTarget=selectedId; view='medicine'; }
       else if(nav==='injury'){ healthTarget=selectedId; selectedInjSev=null; view='injury'; }
-      else if(nav==='animalDetails'){ editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined; view='animalDetails'; }
+      else if(nav==='animalDetails'){ editAnimalMotherId=undefined; editAnimalMotherExternalEid=undefined; editAnimalFatherId=undefined; editAnimalFatherExternalEid=undefined; editAnimalEid=undefined; editAnimalPhoto=undefined; editAnimalIsCross=undefined; view='animalDetails'; }
       render();
     });
     document.querySelectorAll('[data-factorinfo]').forEach(el=>el.onclick=()=>{
@@ -10246,7 +10282,7 @@ Rules:
         const pending=JSON.parse(pendingRaw);
         if(Date.now()-(pending.savedAt||0) < 24*60*60*1000){
           showConfirmModal('Adding an animal from a passport scan looks like it got interrupted before it was saved \u2014 want to pick up where it left off?', ()=>{
-            view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false;
+            view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false;
             render();
             const filled=applyPassportScanResult(pending.result);
             try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
