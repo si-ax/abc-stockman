@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16x';
+const APP_BUILD_VERSION = '2026-09-16y';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,14 @@ const APP_BUILD_VERSION = '2026-09-16x';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16y',
+    date: '16 Sep 2026',
+    bullets: [
+      "The real fix for scans/photos dumping you back on Home: every camera use (photos, passport scans, tag scans) now happens inside the app itself instead of handing off to your phone's separate camera app \u2014 that hand-off was the actual root cause all along.",
+      "If camera access is ever needed again after switching apps on an iPhone, you'll now get a clear \u201ctap to allow again\u201d prompt in the moment, instead of it just failing."
+    ]
+  },
   {
     version: '2026-09-16x',
     date: '16 Sep 2026',
@@ -1026,7 +1034,6 @@ function photoCaptureBlockModal(idPrefix, currentPhoto, labelText){
     <button id="${idPrefix}PreviewBtn" style="width:100%;height:120px;background:#e8e8e8;border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;margin-top:4px;padding:0;overflow:hidden;gap:6px;">
       ${currentPhoto?`<img src="${currentPhoto}" style="width:100%;height:100%;object-fit:cover;">`:`<span style="width:38px;height:38px;color:var(--grey-light);">${icon('camera')}</span>${labelText?`<span style="font-size:13px;font-weight:700;text-transform:uppercase;color:var(--grey);">${labelText}</span>`:''}`}
     </button>
-    <input type="file" accept="image/*" capture="environment" id="${idPrefix}InputCamera" style="display:none;">
     <input type="file" accept="image/*" id="${idPrefix}InputLibrary" style="display:none;">`;
 }
 // Uploads a captured photo (data: URL) to the shared 'photos' Storage
@@ -1051,11 +1058,14 @@ async function uploadPhotoToStorage(dataUrl, idPrefix){
   const { data } = sb.storage.from('photos').getPublicUrl(path);
   return data.publicUrl;
 }
+// idPrefix -> the processFile function each wirePhotoCaptureModal call
+// registers, so the shared photoPick/photoView modal's "Take photo"
+// button (which only knows the idPrefix, not the specific onCapture
+// closure) can hand a freshly captured File to the right place.
+let photoCaptureProcessors={};
 function wirePhotoCaptureModal(idPrefix, onCapture){
-  const cameraInput=document.getElementById(idPrefix+'InputCamera');
   const libraryInput=document.getElementById(idPrefix+'InputLibrary');
-  const handle=(input)=>{
-    const file=input.files && input.files[0];
+  const processFile=(file)=>{
     if(!file) return;
     const reader=new FileReader();
     reader.onload=async()=>{
@@ -1076,13 +1086,26 @@ function wirePhotoCaptureModal(idPrefix, onCapture){
     };
     reader.readAsDataURL(file);
   };
+  photoCaptureProcessors[idPrefix]=processFile;
   document.getElementById(idPrefix+'PreviewBtn').onclick=()=>{
     const img=document.getElementById(idPrefix+'PreviewBtn').querySelector('img');
     modal = img ? {type:'photoView', idPrefix, src:img.src} : {type:'photoPick', idPrefix};
     renderModal();
   };
-  cameraInput.onchange=()=>handle(cameraInput);
-  libraryInput.onchange=()=>handle(libraryInput);
+  libraryInput.onchange=()=>processFile(libraryInput.files && libraryInput.files[0]);
+}
+// Opens an in-page camera view (live video + a Take photo button) instead
+// of handing off to a separate native camera app. That hand-off is what
+// let the OS reclaim/reload the page mid-capture (see the notes on
+// applyPassportScanResult and checkForInterruptedPassportScan) — this
+// avoids the problem at the source by never leaving the page at all.
+// Resolves with a File once the person takes a photo, or rejects if they
+// close the view without taking one.
+function captureFromCamera(){
+  return new Promise((resolve, reject)=>{
+    modal={type:'cameraCapture', resolve, reject};
+    renderModal();
+  });
 }
 // Swaps just the preview image in place — used after a photo capture instead
 // of a full render(), so it doesn't wipe out other fields already typed into
@@ -6516,8 +6539,17 @@ async function processScannedEid(eid, mode, statusEl){
   if(statusEl){ statusEl.style.display='block'; statusEl.style.color='var(--red)'; statusEl.textContent='No active animal found with EID '+eid+'.'; }
 }
 // Opens the camera, then actually reads the tag from the photo taken.
+// If this was triggered from a button living inside another modal (the
+// weigh/move/medBulk "pick animal" modals all have their own scan
+// button), that modal's DOM gets replaced while the camera's open —
+// only one modal shows at a time — so it's snapshotted here and
+// restored the moment the photo's taken, before anything tries to
+// touch its fields. Callers with no modal open (home-scan, herdScanBtn)
+// just get modalSnapshot as null/undefined, which the guard skips.
 function performTagScan(mode, statusElId){
+  const modalSnapshot=modal;
   triggerScanCameraCapture(async(file)=>{
+    if(modalSnapshot){ modal=modalSnapshot; renderModal(); }
     const statusEl=statusElId ? document.getElementById(statusElId) : null;
     if(statusEl){ statusEl.style.display='block'; statusEl.style.color='var(--grey)'; statusEl.textContent='Reading tag\u2026'; }
     showScanningOverlay('Reading tag\u2026');
@@ -6546,24 +6578,12 @@ function performTagScan(mode, statusElId){
     }
   });
 }
+// Used for EID tag scanning and passport scanning — see captureFromCamera
+// for why this stays in-page rather than handing off to a native camera
+// app. onPhotoTaken is simply not called if the person closes the camera
+// view without taking a photo, matching the old cancelled-picker behaviour.
 function triggerScanCameraCapture(onPhotoTaken){
-  let input=document.getElementById('scanCameraInput');
-  if(!input){
-    input=document.createElement('input');
-    input.type='file';
-    input.accept='image/*';
-    input.capture='environment';
-    input.id='scanCameraInput';
-    input.style.display='none';
-    document.body.appendChild(input);
-  }
-  input.onchange=()=>{
-    const file=input.files && input.files[0];
-    input.value=''; // reset so scanning again with the same photo still fires change
-    if(!file) return; // camera cancelled — no tag "read"
-    onPhotoTaken(file);
-  };
-  input.click();
+  captureFromCamera().then(onPhotoTaken).catch(()=>{ /* cancelled */ });
 }
 // Fills the New Animal form from a passport-scan result — shared by the
 // live scan handler (view==='add' wiring) and the resume-after-reload
@@ -6875,6 +6895,22 @@ function renderModal(){
       <div style="display:flex;gap:8px;margin-top:12px;">
         <button id="photoPickLibraryBtn" style="flex:1;background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:12px 8px;font-weight:700;font-size:14px;">Select photo</button>
         <button id="photoPickTakeBtn" style="flex:1;background:var(--primary);color:#fff;border:none;border-radius:8px;padding:12px 8px;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;gap:8px;"><span style="width:18px;height:18px;flex-shrink:0;">${icon('camera')}</span>Take photo</button>
+      </div>
+    </div>`;
+  }
+  if(modal.type==='cameraCapture'){
+    // Deliberately no Cancel/Confirm pair like the other modals — just a
+    // live preview and one shutter button, closest to how a native
+    // camera screen actually reads. The X in the corner is the only way
+    // out otherwise.
+    div.innerHTML=`<div class="modal" style="padding:0;overflow:hidden;">
+      <div style="position:relative;background:#000;">
+        <video id="cameraCaptureVideo" autoplay playsinline muted style="width:100%;display:block;max-height:65vh;background:#000;"></video>
+        <button id="cameraCaptureClose" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;border-radius:50%;width:34px;height:34px;color:#fff;display:flex;align-items:center;justify-content:center;"><span style="width:18px;height:18px;">${icon('close')}</span></button>
+      </div>
+      <div id="cameraCaptureStatus" style="padding:12px 14px 0;font-size:13px;color:var(--grey);text-align:center;line-height:1.4;"></div>
+      <div style="padding:14px;">
+        <button id="cameraCaptureShutter" class="fullbtn" style="display:flex;align-items:center;justify-content:center;gap:8px;" disabled><span style="width:20px;height:20px;flex-shrink:0;">${icon('camera')}</span>Take photo</button>
       </div>
     </div>`;
   }
@@ -7389,12 +7425,79 @@ function renderModal(){
     document.getElementById('modalCancel').onclick=closeModalOnly;
     document.getElementById('photoPickTakeBtn').onclick=()=>{
       closeModalOnly();
-      document.getElementById(idPrefix+'InputCamera').click();
+      captureFromCamera().then(file=>{
+        const processFile=photoCaptureProcessors[idPrefix];
+        if(processFile) processFile(file);
+      }).catch(()=>{ /* cancelled — nothing to do */ });
     };
     document.getElementById('photoPickLibraryBtn').onclick=()=>{
       closeModalOnly();
       document.getElementById(idPrefix+'InputLibrary').click();
     };
+  }
+  if(modal.type==='cameraCapture'){
+    const { resolve, reject } = modal;
+    const videoEl=document.getElementById('cameraCaptureVideo');
+    const statusEl=document.getElementById('cameraCaptureStatus');
+    const shutterBtn=document.getElementById('cameraCaptureShutter');
+    const closeBtn=document.getElementById('cameraCaptureClose');
+    const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent);
+    let stream=null, settled=false;
+    const stopStream=()=>{ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } };
+    closeBtn.onclick=()=>{
+      if(settled) return;
+      settled=true;
+      stopStream();
+      closeModalOnly();
+      reject(new Error('cancelled'));
+    };
+    const takePhoto=()=>{
+      if(settled || !stream) return;
+      const canvas=document.createElement('canvas');
+      canvas.width=videoEl.videoWidth||1280;
+      canvas.height=videoEl.videoHeight||960;
+      canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob)=>{
+        if(settled) return;
+        settled=true;
+        stopStream();
+        closeModalOnly();
+        resolve(new File([blob], 'capture.jpg', {type:'image/jpeg'}));
+      }, 'image/jpeg', 0.85);
+    };
+    // Pulled out so the "Try again" button (shown on a permission denial)
+    // can re-run exactly this, rather than needing the whole modal
+    // re-opened from scratch.
+    const attemptStart=()=>{
+      statusEl.textContent='Starting camera\u2026';
+      shutterBtn.disabled=true;
+      shutterBtn.onclick=takePhoto;
+      navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}, audio:false}).then(s=>{
+        if(settled){ s.getTracks().forEach(t=>t.stop()); return; } // closed while permission was pending
+        stream=s;
+        videoEl.srcObject=s;
+        shutterBtn.disabled=false;
+        statusEl.textContent='';
+      }).catch(err=>{
+        if(settled) return;
+        if(err.name==='NotAllowedError' || err.name==='PermissionDeniedError'){
+          // The specific iOS quirk this is here for: a standalone Home
+          // Screen PWA can lose camera permission after switching apps
+          // and coming back, needing it re-granted — a much smaller,
+          // one-tap problem than the page-reload issue this whole
+          // in-page capture approach exists to avoid in the first place.
+          statusEl.textContent = isIOS
+            ? 'Camera access is needed \u2014 this can happen again after switching apps on iPhone. Tap below to allow it again.'
+            : 'Camera access is needed to take a photo. Tap below to allow it.';
+        } else {
+          statusEl.textContent='Couldn\u2019t start the camera (\u201c'+err.message+'\u201d).';
+        }
+        shutterBtn.textContent='Try again';
+        shutterBtn.disabled=false;
+        shutterBtn.onclick=attemptStart;
+      });
+    };
+    attemptStart();
   }
   if(modal.type==='switchUser'){
     document.querySelectorAll('[data-pickswitchuser]').forEach(el=>el.onclick=async()=>{
@@ -7577,27 +7680,43 @@ function renderModal(){
       renderModal();
     };
     document.getElementById('eidModalScan').onclick=()=>{
+      const modalSnapshot=modal;
       triggerScanCameraCapture(async(file)=>{
-        input.disabled=true;
-        input.placeholder='Reading tag\u2026';
+        // Opening the camera replaced this modal's DOM (only one shows at
+        // a time) — restore it first, then use freshly fetched elements
+        // rather than `input`/`saveBtn` from the outer closure, which now
+        // point at detached nodes from before the camera took over.
+        modal=modalSnapshot; renderModal();
+        const freshInput=document.getElementById('eidModalInput');
+        const freshSaveBtn=document.getElementById('eidModalSave');
+        freshInput.disabled=true;
+        freshInput.placeholder='Reading tag\u2026';
         showScanningOverlay('Reading tag\u2026');
         try{
           const result=await readEidFromPhoto(file, null);
-          input.disabled=false;
-          if(result.digits){ input.value=result.digits; input.focus(); updateEidSaveBtnState(true); }
+          freshInput.disabled=false;
+          if(result.digits){
+            freshInput.value=result.digits; freshInput.focus();
+            if(modalSnapshot.context==='parent'){
+              freshSaveBtn.disabled=false;
+              freshSaveBtn.style.background='var(--primary)'; freshSaveBtn.style.color='#fff'; freshSaveBtn.style.cursor='pointer';
+            } else {
+              freshSaveBtn.style.display='flex';
+            }
+          }
           else {
             // The placeholder alone was too short to hold anything useful
             // — it gets typed over the moment the field's touched, so any
             // real diagnostic detail needs to actually be shown, not just
             // hinted at. Mirrors the detail level of the main scan flow.
-            input.placeholder='Couldn\u2019t read tag \u2014 enter manually';
+            freshInput.placeholder='Couldn\u2019t read tag \u2014 enter manually';
             if(result.geminiError){
               showInfoModal('Couldn\u2019t read a tag number from that photo (Gemini failed \u2014 '+result.geminiError.slice(0,150)+' \u2014 then fell back to the offline reader, which also couldn\u2019t read it) \u2014 try again with better light/focus, or enter the EID manually.');
             }
           }
         } catch(err){
-          input.disabled=false;
-          input.placeholder='Couldn\u2019t read tag \u2014 enter manually';
+          freshInput.disabled=false;
+          freshInput.placeholder='Couldn\u2019t read tag \u2014 enter manually';
         } finally {
           hideScanningOverlay();
         }
