@@ -275,7 +275,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16t';
+const APP_BUILD_VERSION = '2026-09-16w';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +283,28 @@ const APP_BUILD_VERSION = '2026-09-16t';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-16w',
+    date: '16 Sep 2026',
+    bullets: [
+      "Fixed Injury photo analysis (Insights) \u2014 it was calling an API that only ever worked in testing, so it silently never worked on a real phone. It now uses your own Gemini key, same as passport scanning and Ask."
+    ]
+  },
+  {
+    version: '2026-09-16v',
+    date: '16 Sep 2026',
+    bullets: [
+      "Animal event history (Timeline) and breeding records (birthing ease/mothering ability) now sync to the shared farm database too \u2014 this was the last piece. Everything from the original app is now on the shared database."
+    ]
+  },
+  {
+    version: '2026-09-16u',
+    date: '16 Sep 2026',
+    bullets: [
+      "Breeds, Fodder types, the Medicine Cabinet, Farmers & Vets, and farm-wide settings (CPH, farm location, name-display preference) now all sync to the shared farm database \u2014 add or change one on your phone, it shows up on his too.",
+      "The AI settings (Use AI?, your Gemini key) are deliberately NOT shared \u2014 each signed-in person has their own, since it's tied to your own personal quota."
+    ]
+  },
   {
     version: '2026-09-16t',
     date: '16 Sep 2026',
@@ -455,6 +477,66 @@ async function resolveFarmMembership(){
   const { data: remoteFeedUsage, error: feedUsageErr } = await sb.from('feed_usage_records').select('*');
   if(feedUsageErr){ authError = feedUsageErr.message; return; }
   feedUsageRecords = remoteFeedUsage || [];
+
+  const { data: remoteBreeds, error: breedErr } = await sb.from('breeds').select('*');
+  if(breedErr){ authError = breedErr.message; return; }
+  breeds = remoteBreeds || [];
+  const { data: remoteBreedPriceHistory, error: bphErr } = await sb.from('breed_price_history').select('*');
+  if(bphErr){ authError = bphErr.message; return; }
+  breedPriceHistory = remoteBreedPriceHistory || [];
+  const { data: remoteFeedTypes, error: feedTypeErr } = await sb.from('feed_types').select('*');
+  if(feedTypeErr){ authError = feedTypeErr.message; return; }
+  feedTypes = remoteFeedTypes || [];
+  const { data: remoteMedTypes, error: medTypeErr } = await sb.from('medicine_types').select('*');
+  if(medTypeErr){ authError = medTypeErr.message; return; }
+  medicineTypes = remoteMedTypes || [];
+  ensureTbTestMedicineType();
+  const { data: remoteFarmersVets, error: fvErr } = await sb.from('farmers_vets').select('*');
+  if(fvErr){ authError = fvErr.message; return; }
+  farmersVets = remoteFarmersVets || [];
+
+  // Farm-wide settings — one shared row per farm. Created from whatever's
+  // currently in the local default if this farm doesn't have one yet
+  // (e.g. the very first person to sign in on it).
+  const { data: remoteFarmSettings, error: fsErr } = await sb.from('farm_settings').select('*').eq('farm_id', authFarmId).maybeSingle();
+  if(fsErr){ authError = fsErr.message; return; }
+  if(remoteFarmSettings){
+    farmSettings.cph = remoteFarmSettings.cph||'';
+    farmSettings.farm_location = remoteFarmSettings.farm_location;
+    farmSettings.typical_gestation_days = remoteFarmSettings.typical_gestation_days??283;
+    farmSettings.use_animal_names = remoteFarmSettings.use_animal_names!==false;
+  } else {
+    await sb.from('farm_settings').insert({ farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false });
+  }
+
+  // Per-user settings — this signed-in person's own row only, never
+  // shared with the rest of the farm (see the note on userSettings).
+  const { data: remoteUserSettings, error: usErr } = await sb.from('user_settings').select('*').eq('user_id', authUser.id).maybeSingle();
+  if(usErr){ authError = usErr.message; return; }
+  if(remoteUserSettings){
+    userSettings.use_ai = !!remoteUserSettings.use_ai;
+    userSettings.gemini_api_key = remoteUserSettings.gemini_api_key||null;
+    userSettings.mute_weighing_notification = !!remoteUserSettings.mute_weighing_notification;
+  } else {
+    await sb.from('user_settings').insert({ user_id:authUser.id, use_ai:!!userSettings.use_ai, gemini_api_key:userSettings.gemini_api_key||null, mute_weighing_notification:!!userSettings.mute_weighing_notification });
+  }
+
+  // Animal event history — stored flat in Supabase (one row per event),
+  // but the rest of the app expects `events` keyed by animal id, each
+  // holding its own chronological array, so it's regrouped here on the
+  // way in. created_at ascending keeps each animal's history in the
+  // order it actually happened.
+  const { data: remoteEvents, error: eventsErr } = await sb.from('animal_events').select('*').order('created_at', {ascending:true});
+  if(eventsErr){ authError = eventsErr.message; return; }
+  events = {};
+  (remoteEvents||[]).forEach(e=>{
+    if(!events[e.animal_id]) events[e.animal_id]=[];
+    events[e.animal_id].push({id:e.id, event_type:e.event_type, from_status:e.from_status, to_status:e.to_status, reason:e.reason, note:e.note, created_at:e.created_at, farmer_id:e.farmer_id});
+  });
+
+  const { data: remoteBreeding, error: breedingErr } = await sb.from('breeding_records').select('*');
+  if(breedingErr){ authError = breedingErr.message; return; }
+  breedingRecords = remoteBreeding || [];
 }
 
 // Pushes one animal's current full state up to Supabase — called after
@@ -549,6 +631,82 @@ async function syncFeedUsageToSupabase(usageRec){
     start_date:usageRec.start_date, end_date:usageRec.end_date, end_status:usageRec.end_status,
   });
   if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync fodder usage to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+
+// ---- Phase 3: reference/config lists + farm & user settings ----
+async function syncBreedToSupabase(b){
+  if(!authFarmId) return;
+  const { error } = await sb.from('breeds').upsert({
+    id:b.id, farm_id:authFarmId, species:b.species||'cattle', name:b.name,
+    price_per_kg:b.price_per_kg??null, min_prime_months:b.min_prime_months??null, max_prime_months:b.max_prime_months??null,
+    active:!!b.active,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync breed <b>'+escapeHtml(b.name)+'</b> to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+async function syncBreedPriceHistoryToSupabase(h){
+  if(!authFarmId) return;
+  const { error } = await sb.from('breed_price_history').insert({ id:h.id, farm_id:authFarmId, breed_id:h.breed_id, price_per_kg:h.price_per_kg, changed_at:h.changed_at });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync breed price history to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+async function syncFeedTypeToSupabase(f){
+  if(!authFarmId) return;
+  const { error } = await sb.from('feed_types').upsert({ id:f.id, farm_id:authFarmId, name:f.name, active:!!f.active });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync fodder type <b>'+escapeHtml(f.name)+'</b> to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+async function syncMedicineTypeToSupabase(m){
+  if(!authFarmId) return;
+  const { error } = await sb.from('medicine_types').upsert({
+    id:m.id, farm_id:authFarmId, name:m.name, type:m.type??null, batch_no:m.batch_no??null, expiry_date:m.expiry_date??null,
+    qty_size:m.qty_size??null, qty_unit:m.qty_unit??null, cost:m.cost??null, supplier:m.supplier??null, supplier_address:m.supplier_address??null,
+    withdrawal_days:m.withdrawal_days??null, dosage_per_kg:m.dosage_per_kg??null, photo_data:m.photo_data??null,
+    active:!!m.active, locked:!!m.locked, disposed_at:m.disposed_at??null,
+    disposal_qty_remaining:m.disposal_qty_remaining??null, disposal_qty_diff_reason:m.disposal_qty_diff_reason??null,
+    disposal_date:m.disposal_date??null, disposal_method:m.disposal_method??null,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync <b>'+escapeHtml(m.name)+'</b> to the shared Medicine Cabinet \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+async function syncFarmerVetToSupabase(p){
+  if(!authFarmId) return;
+  const { error } = await sb.from('farmers_vets').upsert({ id:p.id, farm_id:authFarmId, name:p.name, role:p.role??null, active:!!p.active });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync <b>'+escapeHtml(p.name)+'</b> to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+// Farm-wide — every member sees and can change these.
+async function syncFarmSettingsToSupabase(){
+  if(!authFarmId) return;
+  const { error } = await sb.from('farm_settings').upsert({
+    farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null,
+    typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync farm settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+// Per-user — deliberately keyed by user_id alone, never farm_id. See the
+// note on the userSettings declaration for why this isn't shared.
+async function syncUserSettingsToSupabase(){
+  if(!authUser) return;
+  const { error } = await sb.from('user_settings').upsert({
+    user_id:authUser.id, use_ai:!!userSettings.use_ai, gemini_api_key:userSettings.gemini_api_key||null,
+    mute_weighing_notification:!!userSettings.mute_weighing_notification,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync your AI settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+// Insert-only — an event is a historical fact, never edited or deleted
+// once logged, so this only ever needs to add one new row.
+async function syncAnimalEventToSupabase(animalId, ev){
+  if(!authFarmId) return;
+  const { error } = await sb.from('animal_events').insert({
+    id:ev.id, farm_id:authFarmId, animal_id:animalId, event_type:ev.event_type, from_status:ev.from_status,
+    to_status:ev.to_status, reason:ev.reason||null, note:ev.note||null, created_at:ev.created_at, farmer_id:ev.farmer_id||null,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync that event to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+// Also insert-only — birthing-ease/mothering-ability are logged once per
+// calving, never edited afterwards.
+async function syncBreedingRecordToSupabase(rec){
+  if(!authFarmId) return;
+  const { error } = await sb.from('breeding_records').insert({
+    id:rec.id, farm_id:authFarmId, animal_id:rec.animal_id, field:rec.field, value:rec.value, date:rec.date, created_at:rec.created_at,
+  });
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync that breeding record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
 }
 const BREEDS_SEED = ['Angus','Hereford','Friesian','Charolais','Limousin'];
 const FEED_TYPES_SEED = ['Hay','Straw','Water','Silage','Concentrate','Corn','Grass'];
@@ -1029,6 +1187,10 @@ let usingFeed=true, usingFeedLog=[];
 // feedRecords is now a FARM-WIDE ledger, not per-animal: [{id, feed_type, sack_price, sacks, start_date, end_date}]
 // Cost per animal is calculated (see feedCostTotal), never entered directly — see mockup Screen 19.
 let farmSettings={typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:''};
+// Per-signed-in-user, not per-farm — each person's own Gemini key has its
+// own daily quota, so this deliberately does NOT live in farmSettings or
+// sync to other farm members. See syncUserSettingsToSupabase.
+let userSettings={use_ai:false, gemini_api_key:null, mute_weighing_notification:false};
 // ---- Device pairing / login (Farm ID + Passcode) ----
 // deviceFarmCode/deviceFarmName persist once this device is paired to a
 // farm — that's the rare "set up this device" step. currentFarmerId is the
@@ -1075,8 +1237,17 @@ function daysAgoIso(days){ const d=new Date(); d.setDate(d.getDate()-days); retu
 // retroactively for anyone who already had data before this was introduced.
 function ensureTbTestMedicineType(){
   const existing=medicineTypes.find(m=>m.name.trim().toLowerCase()==='tb test');
-  if(existing){ existing.locked=true; existing.active=true; }
-  else{ medicineTypes.push({id:uuid(), name:'TB test', withdrawal_days:0, active:true, locked:true}); }
+  if(existing){
+    existing.locked=true; existing.active=true;
+  } else {
+    const tb={id:uuid(), name:'TB test', withdrawal_days:0, active:true, locked:true};
+    medicineTypes.push(tb);
+    // Fire-and-forget, same reasoning as setFeedStatus — this can be
+    // called from many places, some not already async/awaited, and it's
+    // a one-off default-data creation, not a user action that needs to
+    // block on network confirmation.
+    if(typeof syncMedicineTypeToSupabase==='function') syncMedicineTypeToSupabase(tb);
+  }
 }
 // Retroactively backfills "every demo animal except A-1024 has a recent TB
 // test" for anyone who already had the built-in test dataset loaded before
@@ -1105,7 +1276,7 @@ function ensureDemoTbTests(){
 }
 
 function genSeed(){
-  farmSettings={typical_gestation_days:283, use_animal_names:true, use_ai:false, farm_location:null, cph:'', test_data_mode:'loaded'};
+  farmSettings={typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:'', test_data_mode:'loaded'};
   loadDemoTestData();
 }
 // Populates the app with the built-in demo dataset: breeds, fodder types,
@@ -1246,7 +1417,7 @@ async function loadAll(){
   if(!instD){ instD=new Date().toISOString(); await safeSet('local:installdate', instD); }
   installDate=instD;
   lockoutCleared = (await safeGet('local:lockoutcleared'))==='1';
-  const b=await safeGet('local:breeds'), a=await safeGet('local:animals'), e=await safeGet('local:events'), w=await safeGet('local:weights'), ft=await safeGet('local:feedtypes'), fr=await safeGet('local:feedrecords'), fur=await safeGet('local:feedusagerecords'), mt=await safeGet('local:medicinetypes'), mr=await safeGet('local:medicinerecords'), ir=await safeGet('local:injuryrecords'), fs=await safeGet('local:farmsettings'), dr=await safeGet('local:damagerecords'), mv=await safeGet('local:moverecords'), fv=await safeGet('local:farmersvets'), uf=await safeGet('local:usingfeed'), ufl=await safeGet('local:usingfeedlog'), br=await safeGet('local:breedingrecords'), fl=await safeGet('local:feedlocation'), fll=await safeGet('local:feedlocationlog');
+  const b=await safeGet('local:breeds'), a=await safeGet('local:animals'), e=await safeGet('local:events'), w=await safeGet('local:weights'), ft=await safeGet('local:feedtypes'), fr=await safeGet('local:feedrecords'), fur=await safeGet('local:feedusagerecords'), mt=await safeGet('local:medicinetypes'), mr=await safeGet('local:medicinerecords'), ir=await safeGet('local:injuryrecords'), fs=await safeGet('local:farmsettings'), us=await safeGet('local:usersettings'), dr=await safeGet('local:damagerecords'), mv=await safeGet('local:moverecords'), fv=await safeGet('local:farmersvets'), uf=await safeGet('local:usingfeed'), ufl=await safeGet('local:usingfeedlog'), br=await safeGet('local:breedingrecords'), fl=await safeGet('local:feedlocation'), fll=await safeGet('local:feedlocationlog');
   const dfc=await safeGet('local:devicefarmcode'), dfn=await safeGet('local:devicefarmname'), cfi=await safeGet('local:currentfarmerid'), cfn=await safeGet('local:currentfarmername');
   deviceFarmCode = dfc||null; deviceFarmName = dfn||null;
   currentFarmerId = cfi||null; currentFarmerName = cfn||null;
@@ -1256,12 +1427,13 @@ async function loadAll(){
     feedTypes= ft?JSON.parse(ft):[]; feedRecords= fr?JSON.parse(fr):[]; feedUsageRecords= fur?JSON.parse(fur):[];
     medicineTypes= mt?JSON.parse(mt):[]; medicineRecords= mr?JSON.parse(mr):[]; injuryRecords= ir?JSON.parse(ir):[];
     ensureTbTestMedicineType();
-    farmSettings= fs?JSON.parse(fs):{typical_gestation_days:283, use_animal_names:true, use_ai:false, farm_location:null, cph:'', test_data_mode:'loaded'};
+    farmSettings= fs?JSON.parse(fs):{typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:'', test_data_mode:'loaded'};
     if(farmSettings.typical_gestation_days==null) farmSettings.typical_gestation_days=283;
     if(farmSettings.cph==null) farmSettings.cph='';
     if(farmSettings.test_data_mode==null) farmSettings.test_data_mode='loaded';
-    if(farmSettings.use_ai==null) farmSettings.use_ai=false;
-    if(farmSettings.gemini_api_key===undefined) farmSettings.gemini_api_key=null;
+    userSettings= us?JSON.parse(us):{use_ai:false, gemini_api_key:null, mute_weighing_notification:false};
+    if(userSettings.use_ai==null) userSettings.use_ai=false;
+    if(userSettings.gemini_api_key===undefined) userSettings.gemini_api_key=null;
     damageRecords= dr?JSON.parse(dr):[];
     moveRecords= mv?JSON.parse(mv):[];
     farmersVets= fv?JSON.parse(fv):[];
@@ -1602,6 +1774,7 @@ async function persistAll(){
   await safeSet('local:medicinerecords', JSON.stringify(medicineRecords));
   await safeSet('local:injuryrecords', JSON.stringify(injuryRecords));
   await safeSet('local:farmsettings', JSON.stringify(farmSettings));
+  await safeSet('local:usersettings', JSON.stringify(userSettings));
   await safeSet('local:damagerecords', JSON.stringify(damageRecords));
   await safeSet('local:moverecords', JSON.stringify(moveRecords));
   await safeSet('local:farmersvets', JSON.stringify(farmersVets));
@@ -2392,6 +2565,14 @@ function openInjuries(animalId){return injuryRecords.filter(r=>r.animal_id===ani
 
 // ================= AI INSIGHTS (Claude Vision, runs automatically once online) =================
 async function analyzeInjury(rec){
+  if(!userSettings.gemini_api_key){
+    rec.analysis_status='failed';
+    logMsg('Insights: analysis needs a Gemini API key set up in Settings \u2014 add yours to enable this.');
+    await persistAll();
+    await syncInjuryToSupabase(rec);
+    render();
+    return;
+  }
   rec.analysis_status='analyzing';
   render();
   try{
@@ -2411,23 +2592,49 @@ Quick check from the farmer: bleeding=${!!ck.bleeding}, cannot_put_weight_on_it=
 Look at the photo together with this information. Respond ONLY with JSON, no other text, in exactly this shape:
 {"diagnosis": "short plain-language assessment of what this looks like, 1-2 sentences", "treatment": "practical next-step advice for the farmer, 2-3 sentences, plain language, field-appropriate", "confidence": "high", "vet_recommended": true}
 (confidence must be exactly "high", "medium", or "low"; vet_recommended must be a real boolean)`;
-    const response=await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-6',
-        max_tokens:500,
-        messages:[{ role:'user', content:[
-          {type:'image', source:{type:'base64', media_type, data:base64}},
-          {type:'text', text:promptText}
-        ]}]
-      })
-    });
-    const data=await response.json();
-    const textBlock=(data.content||[]).find(c=>c.type==='text');
-    if(!textBlock) throw new Error('No response text from analysis');
-    const cleaned=textBlock.text.replace(/```json|```/g,'').trim();
-    const parsed=JSON.parse(cleaned);
+    // Same model-candidate/timeout/retry pattern as readAnimalFromPassportGemini
+    // and askFarmQuestionGemini — this used to call api.anthropic.com
+    // directly with no key, which only ever worked inside a Claude.ai
+    // artifact preview, not on a real deployed site like this one.
+    const GEMINI_TIMEOUT_MS=20000; // a diagnosis needs more room than a quick tag/passport read
+    let lastErr, parsed;
+    for(const model of GEMINI_MODEL_CANDIDATES){
+      const controller=new AbortController();
+      const timeoutId=setTimeout(()=>controller.abort(), GEMINI_TIMEOUT_MS);
+      let resp;
+      try{
+        resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
+          method:'POST',
+          headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
+          body:JSON.stringify({
+            contents:[{parts:[{text:promptText},{inline_data:{mime_type:media_type, data:base64}}]}],
+            generationConfig:{temperature:0.2, maxOutputTokens:500, thinkingConfig:{thinkingBudget:0}},
+          }),
+          signal:controller.signal,
+        });
+      }catch(networkErr){
+        const timedOut = networkErr.name==='AbortError';
+        lastErr = timedOut ? new Error('Gemini ('+model+') timed out after '+(GEMINI_TIMEOUT_MS/1000)+'s (weak/slow signal)') : networkErr;
+        if(!timedOut) throw lastErr;
+        continue;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      if(resp.ok){
+        const json=await resp.json();
+        const text=json?.candidates?.[0]?.content?.parts?.[0]?.text;
+        const finishReason=json?.candidates?.[0]?.finishReason;
+        if(!text) throw new Error('Gemini ('+model+') returned no readable text (finishReason: '+(finishReason||'unknown')+')');
+        const cleaned=text.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
+        try{ parsed=JSON.parse(cleaned); }catch(parseErr){ throw new Error('Gemini ('+model+') reply couldn\u2019t be read as data: \u201c'+cleaned.slice(0,120)+'\u201d'); }
+        break;
+      }
+      const errBody=await resp.text().catch(()=>'');
+      lastErr=new Error('Gemini ('+model+') request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
+      const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
+      if(!worthRetrying) throw lastErr;
+    }
+    if(!parsed) throw lastErr;
     rec.ai_diagnosis=parsed.diagnosis||null;
     rec.ai_treatment=parsed.treatment||null;
     rec.ai_confidence=parsed.confidence||null;
@@ -3316,7 +3523,7 @@ function herdFlags(){
     const tB = lwB ? new Date(lwB.recorded_at).getTime() : -Infinity;
     return tA-tB || byName(a,b);
   });
-  if(notWeighed.length) flags.push({key:'notweighed', label:'Unweighed 60+ days', count:notWeighed.length, color:'amber', animals:notWeighed, muted:!!farmSettings.mute_weighing_notification});
+  if(notWeighed.length) flags.push({key:'notweighed', label:'Unweighed 60+ days', count:notWeighed.length, color:'amber', animals:notWeighed, muted:!!userSettings.mute_weighing_notification});
 
   const redHealth=active.filter(a=>healthScore(a).color==='red')
     .sort((a,b)=>healthScore(a).total-healthScore(b).total || byName(a,b));
@@ -3421,7 +3628,7 @@ function renderReports(){
         ${tile('rep-sellno','gavel','Animals to keep',{color:'var(--red)'})}
         ${tile('rep-roi','roi','ROI<br><span style="font-size:11px;">(cost vs current)</span>',{color:'var(--grey)'})}
         ${tile('rep-realized','roi','Realised profit/loss<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
-        ${farmSettings.use_ai===true?tile('rep-ask','questionMark','Ask',{color:'var(--primary)'}):''}
+        ${userSettings.use_ai===true?tile('rep-ask','questionMark','Ask',{color:'var(--primary)'}):''}
       </div>
     </div>
     ${footerBar([
@@ -5687,14 +5894,14 @@ function renderSettings(){
         </button>
         ${settingsOpenSection==='useai'?`<div class="damagepanel">
           <div class="formrow" style="border-bottom:none;margin-top:0;"><label>Use AI?</label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
-            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiYes" ${farmSettings.use_ai===true?'checked':''}> Yes</label>
-            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiNo" ${farmSettings.use_ai!==true?'checked':''}> No</label>
+            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiYes" ${userSettings.use_ai===true?'checked':''}> Yes</label>
+            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiNo" ${userSettings.use_ai!==true?'checked':''}> No</label>
           </div></div>
           <div style="font-size:13px;color:var(--grey);margin-top:8px;">Turns on the "Ask" feature in Reports \u2014 lets you type or speak a question and get an answer using your own farm records, plus general farming knowledge. Also used for enhanced tag reading \u2014 when scanning an EID tag, this is tried first and reads angled, worn, or stylised tags far better than the built-in offline reader (which is still used as an automatic fallback if there's no signal or the request fails, so tag scanning always still works either way). Off by default. You'll be limited to your own usage allowance per day; the AI provider only sees your question (for Ask) or the tag photo (for tag reading), plus a summary of your records needed to answer it, nothing more.</div>
-          ${farmSettings.use_ai===true?`
+          ${userSettings.use_ai===true?`
           <div style="border-top:1px solid var(--line);margin:14px 0 0;padding-top:14px;">
             <label style="margin-top:0;">Gemini API key</label>
-            <input type="text" id="geminiApiKey" placeholder="Paste your key here" value="${farmSettings.gemini_api_key?escapeHtml(farmSettings.gemini_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <input type="text" id="geminiApiKey" placeholder="Paste your key here" value="${userSettings.gemini_api_key?escapeHtml(userSettings.gemini_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
             <div style="font-size:13px;color:var(--grey);margin-top:8px;">Free to get from Google AI Studio, with a daily usage allowance (that allowance is shared across every scan/question made on this key, so is worth keeping an eye on if several people share one). The key is stored only on this device and sent only to Google.</div>
             <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--link);">Get a Gemini API key from Google AI Studio &rarr;</a>
           </div>`:''}
@@ -5955,7 +6162,7 @@ async function readEidFromPhotoTesseract(file, statusEl){
 // revisiting this pinned fallback occasionally as models keep moving.
 const GEMINI_MODEL_CANDIDATES=['gemini-flash-latest', 'gemini-3.6-flash'];
 async function readEidFromPhotoGemini(file, statusEl){
-  if(!farmSettings.gemini_api_key) throw new Error('no Gemini key configured');
+  if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
   if(statusEl){ statusEl.style.display='block'; statusEl.style.color='var(--grey)'; statusEl.textContent='Reading tag\u2026'; }
   updateScanningOverlay('Reading tag\u2026');
   const base64=await new Promise((resolve,reject)=>{
@@ -5996,7 +6203,7 @@ async function readEidFromPhotoGemini(file, statusEl){
     try{
       resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
         method:'POST',
-        headers:{'Content-Type':'application/json', 'x-goog-api-key':farmSettings.gemini_api_key},
+        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
         body:JSON.stringify({
           contents:[{parts:[{text:prompt},{inline_data:{mime_type:file.type||'image/jpeg', data:base64}}]}],
           // thinkingBudget:0 turns off "thinking" for this model family —
@@ -6080,7 +6287,7 @@ async function readEidFromPhotoGemini(file, statusEl){
 // without a Gemini key this feature just isn't available, and the caller
 // says so up front.
 async function readAnimalFromPassportGemini(file){
-  if(!farmSettings.gemini_api_key) throw new Error('no Gemini key configured');
+  if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
   updateScanningOverlay('Reading passport\u2026');
   const base64=await new Promise((resolve,reject)=>{
     const reader=new FileReader();
@@ -6111,7 +6318,7 @@ async function readAnimalFromPassportGemini(file){
     try{
       resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
         method:'POST',
-        headers:{'Content-Type':'application/json', 'x-goog-api-key':farmSettings.gemini_api_key},
+        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
         body:JSON.stringify({
           contents:[{parts:[{text:prompt},{inline_data:{mime_type:file.type||'image/jpeg', data:base64}}]}],
           generationConfig:{temperature:0, maxOutputTokens:500, thinkingConfig:{thinkingBudget:0}},
@@ -6150,7 +6357,7 @@ async function readAnimalFromPassportGemini(file){
 // farmer's own Gemini key instead of the sandbox-only Claude endpoint,
 // so Ask actually works once this app is used outside a Claude preview.
 async function askFarmQuestionGemini(promptText){
-  if(!farmSettings.gemini_api_key) throw new Error('no Gemini key configured');
+  if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
   const GEMINI_TIMEOUT_MS=20000; // answers need more room than a single tag read
   let lastErr;
   for(const model of GEMINI_MODEL_CANDIDATES){
@@ -6161,7 +6368,7 @@ async function askFarmQuestionGemini(promptText){
     try{
       resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
         method:'POST',
-        headers:{'Content-Type':'application/json', 'x-goog-api-key':farmSettings.gemini_api_key},
+        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
         body:JSON.stringify({
           contents:[{parts:[{text:promptText}]}],
           generationConfig:{temperature:0.2, maxOutputTokens:1024, thinkingConfig:{thinkingBudget:0}},
@@ -6196,7 +6403,7 @@ async function askFarmQuestionGemini(promptText){
   throw lastErr;
 }
 async function readEidFromPhoto(file, statusEl){
-  if(farmSettings.use_ai===true && farmSettings.gemini_api_key){
+  if(userSettings.use_ai===true && userSettings.gemini_api_key){
     try{
       const digits=await readEidFromPhotoGemini(file, statusEl);
       return {digits, engineUsed:'gemini'};
@@ -6262,7 +6469,7 @@ function performTagScan(mode, statusElId){
         // immediately instead of needing another round to dig it out.
         let engineNote = result.engineUsed==='gemini' ? ' (read via Gemini)'
           : result.geminiError ? ' (Gemini failed \u2014 '+result.geminiError.slice(0,150)+' \u2014 then fell back to the offline reader, which also couldn\u2019t read it)'
-          : (farmSettings.use_ai===true && farmSettings.gemini_api_key) ? '' : ' (offline reader \u2014 AI/Gemini key not set up)';
+          : (userSettings.use_ai===true && userSettings.gemini_api_key) ? '' : ' (offline reader \u2014 AI/Gemini key not set up)';
         const msg='Couldn\u2019t read a tag number from that photo'+engineNote+' \u2014 try again with better light/focus, or enter the EID manually.';
         if(statusEl){ statusEl.style.color='var(--red)'; statusEl.textContent=msg; } else showInfoModal(msg);
         return;
@@ -7483,16 +7690,20 @@ async function confirmModal(){
   if(modal.type==='restore'){
     const reason=document.getElementById('modalReason').value.trim();
     if(!reason){ document.getElementById('modalErr').textContent='Reason is required to restore.'; return; }
-    events[a.id].push({event_type:'restored', from_status:a.status, to_status:'active', reason, created_at:new Date().toISOString(), farmer_id:currentFarmerId});
+    const restoredEvent={id:uuid(), event_type:'restored', from_status:a.status, to_status:'active', reason, created_at:new Date().toISOString(), farmer_id:currentFarmerId};
+    events[a.id].push(restoredEvent);
     a.status='active'; a.updated_at=new Date().toISOString();
     await persistAll();
     await syncAnimalToSupabase(a);
+    await syncAnimalEventToSupabase(a.id, restoredEvent);
     logMsg('Restored <b>'+(animalDisplayName(a))+'</b> to active. Reason: &ldquo;'+escapeHtml(reason)+'&rdquo;');
   } else if(modal.type==='void'){
-    events[a.id].push({event_type:'voided', from_status:a.status, to_status:'voided', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId});
+    const voidedEvent={id:uuid(), event_type:'voided', from_status:a.status, to_status:'voided', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId};
+    events[a.id].push(voidedEvent);
     a.status='voided'; a.updated_at=new Date().toISOString();
     await persistAll();
     await syncAnimalToSupabase(a);
+    await syncAnimalEventToSupabase(a.id, voidedEvent);
     logMsg('Removed <b>'+(animalDisplayName(a))+'</b> (accidental entry). This cannot be restored.');
   } else if(modal.type==='exit'){
     const wd = modal.status==='sold' ? activeWithdrawal(a.id) : null;
@@ -7525,13 +7736,15 @@ async function confirmModal(){
     else if(modal.status==='swapped') realizedValue = document.getElementById('exitSwapDirection').value==='received' ? exitValueMag : -exitValueMag;
     else realizedValue = isLoss ? -exitValueMag : exitValueMag;
     const exitIso = exitDate===todayStr() ? new Date().toISOString() : new Date(exitDate+'T12:00:00').toISOString();
-    events[a.id].push({event_type:EXIT_STATUSES[modal.status], from_status:'active', to_status:modal.status, reason:null, note:note||null, created_at:exitIso, farmer_id:currentFarmerId});
+    const exitEvent={id:uuid(), event_type:EXIT_STATUSES[modal.status], from_status:'active', to_status:modal.status, reason:null, note:note||null, created_at:exitIso, farmer_id:currentFarmerId};
+    events[a.id].push(exitEvent);
     a.status=modal.status; a.updated_at=new Date().toISOString();
     a.realized_value=realizedValue;
     a.realized_value_date=exitDate;
     if(modal.status==='dead') a.fallen_stock_ref=fallenStockRef;
     await persistAll();
     await syncAnimalToSupabase(a);
+    await syncAnimalEventToSupabase(a.id, exitEvent);
     logMsg('Marked <b>'+(animalDisplayName(a))+'</b> as '+modal.status+' (net '+(realizedValue<0?'loss':'gain')+' of '+fmtGBP(Math.abs(realizedValue))+')'+(wd?' <span style="color:var(--red);">(overrode an active withdrawal warning)</span>':'')+'.');
   }
   modal=null;
@@ -7980,9 +8193,10 @@ function wireView(){
     const toggleWeighingBtn=document.querySelector('[data-toggleweighing]');
     if(toggleWeighingBtn) toggleWeighingBtn.onclick=async(e)=>{
       e.stopPropagation();
-      const nowMuted = !farmSettings.mute_weighing_notification;
-      farmSettings.mute_weighing_notification = nowMuted;
+      const nowMuted = !userSettings.mute_weighing_notification;
+      userSettings.mute_weighing_notification = nowMuted;
       await persistAll();
+      await syncUserSettingsToSupabase();
       logMsg(nowMuted ? 'Muted the "Unweighed" notification.' : 'Turned the "Unweighed" notification back on.');
       showSaveToast(nowMuted ? 'Notification muted' : 'Notification unmuted');
       render();
@@ -8100,15 +8314,21 @@ function wireView(){
       a.offspring_until_date=untilDate;
 
       const easeVal=document.getElementById('birthingEase').value;
+      let newEaseRec=null;
       if(breedingEasePick!==undefined){
-        breedingRecords.push({id:uuid(), animal_id:a.id, field:'birthing_ease', value:easeVal, date:today, created_at:new Date().toISOString()});
+        newEaseRec={id:uuid(), animal_id:a.id, field:'birthing_ease', value:easeVal, date:today, created_at:new Date().toISOString()};
+        breedingRecords.push(newEaseRec);
       }
       const motherVal=document.getElementById('motheringAbility').value;
+      let newMotherRec=null;
       if(breedingMotherPick!==undefined){
-        breedingRecords.push({id:uuid(), animal_id:a.id, field:'mothering_ability', value:motherVal, date:today, created_at:new Date().toISOString()});
+        newMotherRec={id:uuid(), animal_id:a.id, field:'mothering_ability', value:motherVal, date:today, created_at:new Date().toISOString()};
+        breedingRecords.push(newMotherRec);
       }
       await persistAll();
       await syncAnimalToSupabase(a);
+      if(newEaseRec) await syncBreedingRecordToSupabase(newEaseRec);
+      if(newMotherRec) await syncBreedingRecordToSupabase(newMotherRec);
       logMsg('Saved breeding details for <b>'+(animalDisplayName(a))+'</b>'+(statusChanged?' (status: '+status.replace('_',' ')+')':'')+'.');
       breedingStatusPick=undefined;
       breedingEasePick=undefined; breedingMotherPick=undefined; breedingOffspringExpanded=false;
@@ -8409,7 +8629,7 @@ function wireView(){
       if(!question){ showInfoModal('Type or dictate a question first.'); return; }
       askQuestionText=question; askLoading=true; askAnswer=null; askError=null; render();
       try{
-        if(!farmSettings.gemini_api_key) throw new Error('no Gemini key configured');
+        if(!userSettings.gemini_api_key) throw new Error('no Gemini key configured');
         const context=buildFarmDataContext();
         const promptText=`You are answering a beef farmer's question about their own farm records, using ONLY the JSON data below plus general farming/animal husbandry knowledge where genuinely relevant (e.g. explaining a term, or general advice). Never invent data that isn't in the JSON — if the data needed to answer isn't there, say so plainly.
 
@@ -8427,7 +8647,7 @@ Rules:
         const parsed=await askFarmQuestionGemini(promptText);
         askAnswer={ answer:parsed.answer||'', records:(parsed.records||[]).slice(0,20), more_available:!!parsed.more_available };
       }catch(e){
-        askError = farmSettings.gemini_api_key
+        askError = userSettings.gemini_api_key
           ? 'Couldn\u2019t get an answer: '+e.message
           : 'Couldn\u2019t get an answer \u2014 add a Gemini API key in Settings > Use AI? first.';
       }
@@ -8595,7 +8815,7 @@ Rules:
     // resume-after-reload flow in the app boot sequence).
     const scanPassportBtn=document.getElementById('scanPassportBtn');
     if(scanPassportBtn) scanPassportBtn.onclick=()=>{
-      if(!(farmSettings.use_ai===true && farmSettings.gemini_api_key)){
+      if(!(userSettings.use_ai===true && userSettings.gemini_api_key)){
         showInfoModal('Scanning a passport needs AI turned on with a Gemini API key set up in Settings \u2014 unlike tag scanning, there\u2019s no offline fallback for reading several fields off a document.', 'useai');
         return;
       }
@@ -8686,8 +8906,10 @@ Rules:
         }
       }
       animals.push(newAnimal);
-      events[id]=[{event_type:'created', from_status:null, to_status:'active', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId}];
+      const createdEvent={id:uuid(), event_type:'created', from_status:null, to_status:'active', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId};
+      events[id]=[createdEvent];
       await persistAll();
+      await syncAnimalEventToSupabase(id, createdEvent);
       logMsg('Added new animal <b>'+(name||tag)+'</b>'+(authFarmId?' (saved to the shared farm database).':' (saved locally).'));
       try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
       newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null;
@@ -8789,19 +9011,20 @@ Rules:
       e.target.value=formatted;
       e.target.setSelectionRange(formatted.length, formatted.length);
     };
-    document.getElementById('cphInput').onchange=async(e)=>{ farmSettings.cph=formatCph(e.target.value); e.target.value=farmSettings.cph; await persistAll(); showSaveToast('Saved'); };
+    document.getElementById('cphInput').onchange=async(e)=>{ farmSettings.cph=formatCph(e.target.value); e.target.value=farmSettings.cph; await persistAll(); await syncFarmSettingsToSupabase(); showSaveToast('Saved'); };
     document.getElementById('useAnimalNamesHelp').onclick=(e)=>{ e.stopPropagation(); showInfoModal('\u2022 Yes: show the animal\u2019s name (or Mgmt ID if no name) with a short EID reference.\n\n\u2022 No: show the full EID only, everywhere \u2014 Mgmt ID and name are hidden.'); };
-    document.getElementById('useAnimalNamesYes').onchange=async()=>{ farmSettings.use_animal_names=true; await persistAll(); logMsg('Animals will now be shown by name.'); render(); showSaveToast('Updated'); };
-    document.getElementById('useAnimalNamesNo').onchange=async()=>{ farmSettings.use_animal_names=false; await persistAll(); logMsg('Animals will now be shown by tag number.'); render(); showSaveToast('Updated'); };
+    document.getElementById('useAnimalNamesYes').onchange=async()=>{ farmSettings.use_animal_names=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by name.'); render(); showSaveToast('Updated'); };
+    document.getElementById('useAnimalNamesNo').onchange=async()=>{ farmSettings.use_animal_names=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by tag number.'); render(); showSaveToast('Updated'); };
     const useAiYesEl=document.getElementById('useAiYes');
-    if(useAiYesEl) useAiYesEl.onchange=async()=>{ farmSettings.use_ai=true; await persistAll(); logMsg('AI (Ask) turned on.'); render(); showSaveToast('Updated'); };
+    if(useAiYesEl) useAiYesEl.onchange=async()=>{ userSettings.use_ai=true; await persistAll(); await syncUserSettingsToSupabase(); logMsg('AI (Ask) turned on.'); render(); showSaveToast('Updated'); };
     const useAiNoEl=document.getElementById('useAiNo');
-    if(useAiNoEl) useAiNoEl.onchange=async()=>{ farmSettings.use_ai=false; await persistAll(); logMsg('AI (Ask) turned off.'); render(); showSaveToast('Updated'); };
+    if(useAiNoEl) useAiNoEl.onchange=async()=>{ userSettings.use_ai=false; await persistAll(); await syncUserSettingsToSupabase(); logMsg('AI (Ask) turned off.'); render(); showSaveToast('Updated'); };
     const geminiKeyEl=document.getElementById('geminiApiKey');
     if(geminiKeyEl) geminiKeyEl.onchange=async()=>{
-      farmSettings.gemini_api_key = geminiKeyEl.value.trim() || null;
+      userSettings.gemini_api_key = geminiKeyEl.value.trim() || null;
       await persistAll();
-      logMsg(farmSettings.gemini_api_key ? 'Gemini API key saved.' : 'Gemini API key removed \u2014 tag scans will use the built-in offline reader only.');
+      await syncUserSettingsToSupabase();
+      logMsg(userSettings.gemini_api_key ? 'Gemini API key saved.' : 'Gemini API key removed \u2014 tag scans will use the built-in offline reader only.');
       showSaveToast('Updated');
     };
     const testDataClearEl=document.getElementById('testDataClear');
@@ -8846,6 +9069,7 @@ Rules:
           farmSettings.farm_location={lat:pos.coords.latitude.toFixed(4), lng:pos.coords.longitude.toFixed(4)};
           document.getElementById('farmLocationInput').value=farmSettings.farm_location.lat+', '+farmSettings.farm_location.lng;
           await persistAll();
+          await syncFarmSettingsToSupabase();
           logMsg('Farm location saved.');
           showSaveToast('Saved');
         },
@@ -8875,6 +9099,8 @@ Rules:
       // when nothing's actually been bought or sold.
       if(b.price_per_kg!=null) breedPriceHistory.push({id:uuid(), breed_id:b.id, price_per_kg:b.price_per_kg, changed_at:new Date().toISOString()});
       await persistAll();
+      await syncBreedToSupabase(b);
+      if(b.price_per_kg!=null) await syncBreedPriceHistoryToSupabase(breedPriceHistory[breedPriceHistory.length-1]);
       logMsg('Updated £/kg for <b>'+b.name+'</b> to '+(b.price_per_kg!=null?fmtGBP(b.price_per_kg):'—')+'.');
       showSaveToast('Updated');
       scrollSettingsSectionIntoView();
@@ -8890,6 +9116,7 @@ Rules:
       if(isNaN(val) || val<=0){ el.value=b.min_prime_months!=null?b.min_prime_months:18; return; }
       b.min_prime_months=val;
       await persistAll();
+      await syncBreedToSupabase(b);
       logMsg('Updated Min Prime age for <b>'+b.name+'</b> to '+val+' months.');
       showSaveToast('Updated');
       scrollSettingsSectionIntoView();
@@ -8900,6 +9127,7 @@ Rules:
       if(isNaN(val) || val<=0){ el.value=b.max_prime_months!=null?b.max_prime_months:30; return; }
       b.max_prime_months=val;
       await persistAll();
+      await syncBreedToSupabase(b);
       logMsg('Updated Max Prime age for <b>'+b.name+'</b> to '+val+' months.');
       showSaveToast('Updated');
       scrollSettingsSectionIntoView();
@@ -8908,6 +9136,7 @@ Rules:
       const b=breeds.find(x=>x.id===el.dataset.toggleBreed);
       b.active=!b.active;
       await persistAll();
+      await syncBreedToSupabase(b);
       logMsg((b.active?'Activated':'Deactivated')+' breed <b>'+b.name+'</b>.');
       render();
       showSaveToast('Updated');
@@ -8917,6 +9146,7 @@ Rules:
       const f=feedTypes.find(x=>x.id===el.dataset.toggleFeedtype);
       f.active=!f.active;
       await persistAll();
+      await syncFeedTypeToSupabase(f);
       logMsg((f.active?'Enabled':'Disabled')+' fodder type <b>'+f.name+'</b>.');
       render();
       showSaveToast(f.active?'Enabled':'Disabled: will not show as option when adding fodder purchase');
@@ -8981,6 +9211,7 @@ Rules:
       const p=farmersVets.find(x=>x.id===el.dataset.toggleFarmervet);
       p.active=!p.active;
       await persistAll();
+      await syncFarmerVetToSupabase(p);
       logMsg((p.active?'Activated':'Deactivated')+' <b>'+p.name+'</b>.');
       render();
       showSaveToast('Updated');
@@ -9007,21 +9238,27 @@ Rules:
         if(!name) return;
         const minP=parseInt(document.getElementById('newBreedMinPrime').value,10)||18;
         const maxP=parseInt(document.getElementById('newBreedMaxPrime').value,10)||30;
-        breeds.push({id:uuid(), species:'cattle', name, min_prime_months:minP, max_prime_months:maxP, active:true});
+        const newBreed={id:uuid(), species:'cattle', name, min_prime_months:minP, max_prime_months:maxP, active:true};
+        breeds.push(newBreed);
         await persistAll();
+        await syncBreedToSupabase(newBreed);
         logMsg('Added new breed <b>'+name+'</b>.');
       } else if(settingsOpenSection==='feedtypes'){
         const name=document.getElementById('newFeedTypeName').value.trim();
         if(!name) return;
-        feedTypes.push({id:uuid(), name, active:true});
+        const newFeedType={id:uuid(), name, active:true};
+        feedTypes.push(newFeedType);
         await persistAll();
+        await syncFeedTypeToSupabase(newFeedType);
         logMsg('Added new fodder type <b>'+name+'</b>.');
       } else if(settingsOpenSection==='farmersvets'){
         const name=document.getElementById('newFarmerVetName').value.trim();
         if(!name) return;
         const role=document.getElementById('newFarmerVetRole').value;
-        farmersVets.push({id:uuid(), name, role, active:true});
+        const newFarmerVet={id:uuid(), name, role, active:true};
+        farmersVets.push(newFarmerVet);
         await persistAll();
+        await syncFarmerVetToSupabase(newFarmerVet);
         logMsg('Added '+role+' <b>'+name+'</b>.');
       } else {
         return;
@@ -9992,17 +10229,20 @@ Rules:
         editItem.withdrawal_days=withdrawalDays; editItem.dosage_per_kg=(dosagePerKg!=null && !isNaN(dosagePerKg))?dosagePerKg:null;
         editItem.photo_data=medCabAddPhoto;
         await persistAll();
+        await syncMedicineTypeToSupabase(editItem);
         logMsg('Updated <b>'+escapeHtml(name)+'</b> in the Medicine Cabinet.');
       } else {
-        medicineTypes.push({
+        const newMedType={
           id:uuid(), name, type, batch_no:batchNoVal, expiry_date:expiryDateVal,
           qty_size:qtySize, qty_unit:qtyUnit,
           cost, supplier:supplierVal, supplier_address:supplierAddressVal,
           withdrawal_days:withdrawalDays, dosage_per_kg:(dosagePerKg!=null && !isNaN(dosagePerKg))?dosagePerKg:null,
           photo_data:medCabAddPhoto,
           active:true, locked:false, disposed_at:null,
-        });
+        };
+        medicineTypes.push(newMedType);
         await persistAll();
+        await syncMedicineTypeToSupabase(newMedType);
         logMsg('Added <b>'+escapeHtml(name)+'</b> to the Medicine Cabinet ('+qtySize+qtyUnit+', '+fmtGBP(cost)+').');
       }
       showSaveToast('Saved');
@@ -10054,6 +10294,7 @@ Rules:
       m.disposal_date=disposalDate;
       m.disposal_method=methodVal;
       await persistAll();
+      await syncMedicineTypeToSupabase(m);
       logMsg('Disposed of <b>'+escapeHtml(m.name)+'</b> (Batch '+escapeHtml(m.batch_no||'')+').');
       showSaveToast('Saved');
       settingsOpenSection='medtypes'; settingsShowAddForm=false;
