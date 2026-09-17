@@ -192,6 +192,25 @@
 
   .modal-backdrop{position:absolute;inset:0;background:rgba(17,17,17,.5);display:flex;align-items:flex-end;z-index:5;}
   .modal{background:#fff;width:100%;border-radius:16px 16px 0 0;padding:16px 16px 20px;}
+  /* Camera capture breaks out of the app's normal portrait phone-frame
+     entirely (position:fixed escapes it — .phone/#screen have no
+     transform set, so this isn't trapped inside their bounds) and fills
+     the REAL device viewport, in whatever orientation it's actually
+     held. object-fit:cover means the live preview fills the available
+     space cleanly either way. The portrait/landscape rule below is what
+     actually gives a landscape hold more usable width for a wide
+     subject (e.g. a passport's printed details, which run across the
+     top of the page) instead of squeezing it into a narrow column. */
+  .camera-fullscreen{position:fixed;inset:0;z-index:200;background:#000;display:flex;flex-direction:column;}
+  .camera-fullscreen .cam-video-wrap{flex:1;position:relative;overflow:hidden;background:#000;min-height:0;min-width:0;}
+  .camera-fullscreen video{width:100%;height:100%;object-fit:cover;display:block;}
+  .camera-fullscreen .cam-close{position:absolute;top:max(10px, env(safe-area-inset-top));right:10px;z-index:2;background:rgba(0,0,0,.55);border:none;border-radius:50%;width:38px;height:38px;color:#fff;display:flex;align-items:center;justify-content:center;}
+  .camera-fullscreen .cam-controls{background:#111;padding:14px;display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:8px;flex-shrink:0;}
+  .camera-fullscreen .cam-status{font-size:13px;color:#ddd;text-align:center;line-height:1.4;min-height:1.2em;}
+  @media (orientation:landscape){
+    .camera-fullscreen{flex-direction:row;}
+    .camera-fullscreen .cam-controls{width:150px;padding:16px 12px;justify-content:center;}
+  }
   .modal h3{font-size:16px;color:var(--ink);margin-bottom:2px;}
   .modal .sub{font-size:12.5px;color:var(--grey);margin-bottom:8px;}
 
@@ -275,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-16y';
+const APP_BUILD_VERSION = '2026-09-17a';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -283,6 +302,21 @@ const APP_BUILD_VERSION = '2026-09-16y';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17a',
+    date: '17 Sep 2026',
+    bullets: [
+      "Camera capture now uses the whole screen and adapts if you turn your phone sideways \u2014 useful for a passport, since the printed details run wide across the top of the page rather than fitting a tall portrait frame.",
+      "New: adding a breed now suggests a typical Prime age range automatically (using AI, if you've got it turned on) \u2014 check it and adjust before saving, it's a starting point, not a guarantee."
+    ]
+  },
+  {
+    version: '2026-09-16z',
+    date: '16 Sep 2026',
+    bullets: [
+      "Fixed a mismatch between passport-scanned and tag-scanned EIDs \u2014 a passport scan now converts \u201cUK\u201d to the same 826 country code tag scanning already uses, so the same animal's EID matches no matter how it was entered."
+    ]
+  },
   {
     version: '2026-09-16y',
     date: '16 Sep 2026',
@@ -723,6 +757,58 @@ async function syncBreedingRecordToSupabase(rec){
     id:rec.id, farm_id:authFarmId, animal_id:rec.animal_id, field:rec.field, value:rec.value, date:rec.date, created_at:rec.created_at,
   });
   if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync that breeding record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+}
+// Suggests a typical Prime age range for a breed the farmer's just typed
+// in — a real live web search isn't something a static, client-only app
+// can do for itself, so this reuses the same per-user Gemini key as
+// passport/tag scanning to get a reasonable general-knowledge estimate
+// instead. Deliberately presented as a starting point to check, not a
+// fact — breed maturation varies a lot by system (grass vs intensive)
+// and individual animal, this is nowhere near precise enough to trust
+// blindly. Returns null (quietly, no error shown) if AI isn't set up,
+// the breed isn't recognised, or the call fails — the existing 18/30
+// default is a perfectly fine fallback either way.
+async function suggestBreedPrimeAgeGemini(breedName){
+  if(!userSettings.gemini_api_key) return null;
+  const prompt='For the cattle breed "'+breedName+'" as commonly reared in the UK, what is a typical age range in months during which a commercially finished animal of this breed is at its prime condition for sale? Base this on the breed\u2019s general reputation for maturation rate (traditional/native breeds often finish later than fast-growing continental breeds) \u2014 a general estimate is fine, this doesn\u2019t need to be precise. Reply with ONLY a JSON object and nothing else, no markdown fences, no explanation: {"min_months": a whole number, "max_months": a whole number}. If "'+breedName+'" isn\u2019t a real cattle breed you recognise, or you\u2019re not reasonably confident, reply with {"min_months": null, "max_months": null} instead of guessing.';
+  const TIMEOUT_MS=12000; // a lower-stakes suggestion — fail fast rather than making the farmer wait
+  for(const model of GEMINI_MODEL_CANDIDATES){
+    const controller=new AbortController();
+    const timeoutId=setTimeout(()=>controller.abort(), TIMEOUT_MS);
+    let resp;
+    try{
+      resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent', {
+        method:'POST',
+        headers:{'Content-Type':'application/json', 'x-goog-api-key':userSettings.gemini_api_key},
+        body:JSON.stringify({
+          contents:[{parts:[{text:prompt}]}],
+          generationConfig:{temperature:0.2, maxOutputTokens:100, thinkingConfig:{thinkingBudget:0}},
+        }),
+        signal:controller.signal,
+      });
+    }catch(networkErr){
+      clearTimeout(timeoutId);
+      continue; // timed out or network error — just try the next model, or give up quietly after the last one
+    }
+    clearTimeout(timeoutId);
+    if(!resp.ok){
+      const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
+      if(!worthRetrying) return null;
+      continue;
+    }
+    const json=await resp.json();
+    const text=json?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if(!text) continue;
+    try{
+      const cleaned=text.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
+      const parsed=JSON.parse(cleaned);
+      if(parsed.min_months==null || parsed.max_months==null) return null; // Gemini itself wasn't confident — leave the defaults alone
+      const min=parseInt(parsed.min_months,10), max=parseInt(parsed.max_months,10);
+      if(isNaN(min) || isNaN(max) || min<=0 || max<=min) return null;
+      return {min, max};
+    }catch(e){ return null; }
+  }
+  return null;
 }
 const BREEDS_SEED = ['Angus','Hereford','Friesian','Charolais','Limousin'];
 const FEED_TYPES_SEED = ['Hay','Straw','Water','Silage','Concentrate','Corn','Grass'];
@@ -5852,6 +5938,7 @@ function renderSettings(){
     <div style="margin-top:10px;">
       <label>New breed name</label>
       <input type="text" id="newBreedName" placeholder="e.g. Dexter">
+      <div id="newBreedPrimeHint" style="font-size:11px;color:var(--grey);margin-top:3px;min-height:1.3em;"></div>
       <label>Min Prime age (months)</label>
       <input type="number" id="newBreedMinPrime" value="18">
       <label>Max Prime age (months)</label>
@@ -6591,10 +6678,29 @@ function triggerScanCameraCapture(onPhotoTaken){
 // background-reload can be recovered rather than silently lost. Assumes
 // the New Animal form is already the DOM currently rendered. Returns the
 // list of field labels actually filled in.
+// Converts a printed country-code prefix (UK, GB, XI) to the numeric
+// equivalent the app stores EIDs as everywhere else — see the notes on
+// extractEidFromOcrText for why (826/899 is what's actually on the
+// electronic chip, not the letters printed for humans to read).
+// Passport scanning reads the letters exactly as printed (see that
+// prompt), so this brings a passport-scanned EID in line with every
+// other entry path before it's stored — otherwise the same animal's EID
+// ends up in two different formats depending on how it was entered,
+// which silently breaks matching between them (mother/father lookups,
+// duplicate detection) since EID comparison elsewhere only strips
+// whitespace, not letters.
+function convertEidCountryPrefix(raw){
+  if(!raw) return raw;
+  const trimmed=String(raw).trim();
+  const m=trimmed.match(/^(UK|GB|XI)\b\s*(.*)$/i);
+  if(!m) return trimmed; // no recognised letter prefix — leave whatever's there alone
+  const prefix = m[1].toUpperCase()==='XI' ? '899' : '826';
+  return (prefix+' '+m[2]).trim();
+}
 function applyPassportScanResult(result){
   const filled=[];
   if(result.eid){
-    newAnimalEid=String(result.eid).trim();
+    newAnimalEid=convertEidCountryPrefix(String(result.eid).trim());
     const btnText=document.getElementById('enterEidBtnText');
     if(btnText) btnText.textContent='EID: '+newAnimalEid;
     filled.push('EID');
@@ -6640,7 +6746,7 @@ function applyPassportScanResult(result){
   // doesn't apply to a value read straight off an official document.
   const norm=s=>s.replace(/\s+/g,'').toLowerCase();
   if(result.dam_eid){
-    const eid=String(result.dam_eid).trim();
+    const eid=convertEidCountryPrefix(String(result.dam_eid).trim());
     const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='F');
     if(found){ newAnimalMotherId=found.id; newAnimalMotherExternalEid=null; }
     else { newAnimalMotherId=null; newAnimalMotherExternalEid=eid; }
@@ -6649,7 +6755,7 @@ function applyPassportScanResult(result){
     filled.push('Mother');
   }
   if(result.sire_eid){
-    const eid=String(result.sire_eid).trim();
+    const eid=convertEidCountryPrefix(String(result.sire_eid).trim());
     const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='M');
     if(found){ newAnimalFatherId=found.id; newAnimalFatherExternalEid=null; }
     else { newAnimalFatherId=null; newAnimalFatherExternalEid=eid; }
@@ -6899,20 +7005,21 @@ function renderModal(){
     </div>`;
   }
   if(modal.type==='cameraCapture'){
-    // Deliberately no Cancel/Confirm pair like the other modals — just a
-    // live preview and one shutter button, closest to how a native
-    // camera screen actually reads. The X in the corner is the only way
-    // out otherwise.
-    div.innerHTML=`<div class="modal" style="padding:0;overflow:hidden;">
-      <div style="position:relative;background:#000;">
-        <video id="cameraCaptureVideo" autoplay playsinline muted style="width:100%;display:block;max-height:65vh;background:#000;"></video>
-        <button id="cameraCaptureClose" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;border-radius:50%;width:34px;height:34px;color:#fff;display:flex;align-items:center;justify-content:center;"><span style="width:18px;height:18px;">${icon('close')}</span></button>
+    div.className='modal-backdrop camera-fullscreen';
+    // No .modal wrapper here (unlike every other modal type) — this one
+    // deliberately isn't a sheet over the app, it's a full takeover of
+    // the real screen while the camera's active. See the CSS notes on
+    // .camera-fullscreen for why, and the landscape media query for how
+    // a rotated phone actually gets more usable framing out of it.
+    div.innerHTML=`
+      <div class="cam-video-wrap">
+        <video id="cameraCaptureVideo" autoplay playsinline muted></video>
+        <button id="cameraCaptureClose" class="cam-close"><span style="width:18px;height:18px;">${icon('close')}</span></button>
       </div>
-      <div id="cameraCaptureStatus" style="padding:12px 14px 0;font-size:13px;color:var(--grey);text-align:center;line-height:1.4;"></div>
-      <div style="padding:14px;">
-        <button id="cameraCaptureShutter" class="fullbtn" style="display:flex;align-items:center;justify-content:center;gap:8px;" disabled><span style="width:20px;height:20px;flex-shrink:0;">${icon('camera')}</span>Take photo</button>
-      </div>
-    </div>`;
+      <div class="cam-controls">
+        <div id="cameraCaptureStatus" class="cam-status"></div>
+        <button id="cameraCaptureShutter" class="fullbtn" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:0;" disabled><span style="width:20px;height:20px;flex-shrink:0;">${icon('camera')}</span>Take photo</button>
+      </div>`;
   }
   if(modal.type==='factorInfo'){
     const a=animals.find(x=>x.id===modal.animalId);
@@ -9353,6 +9460,39 @@ Rules:
       showSaveToast('Updated');
       scrollSettingsSectionIntoView();
     });
+    const newBreedNameEl=document.getElementById('newBreedName');
+    if(newBreedNameEl) newBreedNameEl.onblur=async()=>{
+      const name=newBreedNameEl.value.trim();
+      const hintEl=document.getElementById('newBreedPrimeHint');
+      const minEl=document.getElementById('newBreedMinPrime');
+      const maxEl=document.getElementById('newBreedMaxPrime');
+      if(!name || !minEl || !maxEl) return;
+      // Only auto-fill if these still hold the untouched defaults — never
+      // overwrite something the farmer's already typed in themselves.
+      if(minEl.value!=='18' || maxEl.value!=='30') return;
+      if(!(userSettings.use_ai===true && userSettings.gemini_api_key)){
+        if(hintEl) hintEl.textContent='';
+        return;
+      }
+      if(hintEl) hintEl.textContent='Checking typical Prime age for this breed\u2026';
+      const suggestion=await suggestBreedPrimeAgeGemini(name);
+      // The name field (or the whole form) may have moved on by the time
+      // this resolves — re-check everything's still there, still the
+      // same breed, and still untouched before writing anything.
+      const stillThere=document.getElementById('newBreedName');
+      if(!stillThere || stillThere.value.trim()!==name) return;
+      const minEl2=document.getElementById('newBreedMinPrime');
+      const maxEl2=document.getElementById('newBreedMaxPrime');
+      const hintEl2=document.getElementById('newBreedPrimeHint');
+      if(!minEl2 || !maxEl2 || minEl2.value!=='18' || maxEl2.value!=='30') return;
+      if(suggestion){
+        minEl2.value=suggestion.min;
+        maxEl2.value=suggestion.max;
+        if(hintEl2) hintEl2.textContent='Suggested from AI \u2014 '+suggestion.min+'\u2013'+suggestion.max+' months. Check this and adjust if needed.';
+      } else if(hintEl2){
+        hintEl2.textContent='';
+      }
+    };
     document.querySelectorAll('[data-toggle-feedtype]').forEach(el=>el.onclick=async()=>{
       const f=feedTypes.find(x=>x.id===el.dataset.toggleFeedtype);
       f.active=!f.active;
