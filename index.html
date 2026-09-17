@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17e';
+const APP_BUILD_VERSION = '2026-09-17f';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-17e';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17f',
+    date: '17 Sep 2026',
+    bullets: [
+      "If an AI request fails for a reason the app doesn't already have a plain-English explanation for, the error message now includes the actual detail instead of just \u201csomething went wrong\u201d \u2014 needed to pin down the passport-scan failure properly if it happens again."
+    ]
+  },
   {
     version: '2026-09-17e',
     date: '17 Sep 2026',
@@ -1169,7 +1176,11 @@ function friendlyAiError(err){
   if(/\b401\b|\b403\b/.test(msg) || /invalid.*key|unauthoriz/i.test(msg)) return 'Your AI API key looks like it\u2019s not working \u2014 check it in Settings.';
   if(err instanceof TypeError && /Failed to fetch|NetworkError/i.test(msg)) return 'Couldn\u2019t reach the AI service \u2014 check you have a signal, then try again.';
   if(/timed out/i.test(msg)) return 'That took too long \u2014 check your signal, then try again.';
-  return 'Something went wrong \u2014 try again in a moment.';
+  // Every recognisable case above returns a fully friendly message with
+  // no raw text — this fallback is deliberately different: it's for
+  // whatever we HAVEN'T seen before, so hiding the detail here would
+  // make a genuinely new failure mode undiagnosable next time it happens.
+  return msg ? 'Something went wrong (\u201c'+msg.slice(0,150)+'\u201d) \u2014 try again in a moment.' : 'Something went wrong \u2014 try again in a moment.';
 }
 // Groq — chosen over Gemini specifically for two reasons a real farmer
 // hits immediately: (1) signup only needs any email, not a Google
