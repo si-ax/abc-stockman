@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17c';
+const APP_BUILD_VERSION = '2026-09-17e';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,22 @@ const APP_BUILD_VERSION = '2026-09-17c';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17e',
+    date: '17 Sep 2026',
+    bullets: [
+      "Fixed the \u201cMedicine Cabinet is empty\u201d check on Attention \u2014 it now correctly ignores the automatic TB test entry and only counts real medicines you've added yourself."
+    ]
+  },
+  {
+    version: '2026-09-17d',
+    date: '17 Sep 2026',
+    bullets: [
+      "Home: removed the Home button from the footer (you're already there) \u2014 Scan now sits in that spot instead.",
+      "Settings: \u201cFodder types\u201d is now just \u201cFodder\u201d, with a new \u201cManage fodder spend?\u201d toggle (on by default) \u2014 turn it off and the Fodder tile disappears from Home. You can still manage your fodder list in Settings either way.",
+      "New: Attention now has a \u201cSystem settings\u201d section flagging the basics every farm should set up \u2014 CPH number, at least one breed, at least one fodder type (if you're tracking fodder spend), the Medicine Cabinet, and an AI key if AI's turned on. Tap one to jump straight to fixing it."
+    ]
+  },
   {
     version: '2026-09-17c',
     date: '17 Sep 2026',
@@ -354,7 +370,7 @@ const APP_CHANGELOG = [
     version: '2026-09-16w',
     date: '16 Sep 2026',
     bullets: [
-      "Fixed Injury photo analysis (Insights) \u2014 it was calling an API that only ever worked in testing, so it silently never worked on a real phone. It now uses your own Gemini key, same as passport scanning and Ask."
+      "Fixed Injury photo analysis (Insights) \u2014 it was calling an API that only ever worked in testing, so it silently never worked on a real phone. It now uses your own AI key, same as passport scanning and Ask."
     ]
   },
   {
@@ -369,7 +385,7 @@ const APP_CHANGELOG = [
     date: '16 Sep 2026',
     bullets: [
       "Breeds, Fodder types, the Medicine Cabinet, Farmers & Vets, and farm-wide settings (CPH, farm location, name-display preference) now all sync to the shared farm database \u2014 add or change one on your phone, it shows up on his too.",
-      "The AI settings (Use AI?, your Gemini key) are deliberately NOT shared \u2014 each signed-in person has their own, since it's tied to your own personal quota."
+      "The AI settings (Use AI?, your API key) are deliberately NOT shared \u2014 each signed-in person has their own, since it's tied to your own personal quota."
     ]
   },
   {
@@ -572,8 +588,9 @@ async function resolveFarmMembership(){
     farmSettings.farm_location = remoteFarmSettings.farm_location;
     farmSettings.typical_gestation_days = remoteFarmSettings.typical_gestation_days??283;
     farmSettings.use_animal_names = remoteFarmSettings.use_animal_names!==false;
+    farmSettings.manage_fodder_spend = remoteFarmSettings.manage_fodder_spend!==false;
   } else {
-    await sb.from('farm_settings').insert({ farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false });
+    await sb.from('farm_settings').insert({ farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false, manage_fodder_spend:farmSettings.manage_fodder_spend!==false });
   }
 
   // Per-user settings — this signed-in person's own row only, never
@@ -743,6 +760,7 @@ async function syncFarmSettingsToSupabase(){
   const { error } = await sb.from('farm_settings').upsert({
     farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null,
     typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false,
+    manage_fodder_spend:farmSettings.manage_fodder_spend!==false,
   });
   if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync farm settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
 }
@@ -1411,7 +1429,7 @@ let backupRestoreFile=null, backupRestoreBusy=false, backupRestoreError='', back
 let usingFeed=true, usingFeedLog=[];
 // feedRecords is now a FARM-WIDE ledger, not per-animal: [{id, feed_type, sack_price, sacks, start_date, end_date}]
 // Cost per animal is calculated (see feedCostTotal), never entered directly — see mockup Screen 19.
-let farmSettings={typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:''};
+let farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:''};
 // Per-signed-in-user, not per-farm — each person's own Groq key has its
 // own daily quota, so this deliberately does NOT live in farmSettings or
 // sync to other farm members. See syncUserSettingsToSupabase.
@@ -1501,7 +1519,7 @@ function ensureDemoTbTests(){
 }
 
 function genSeed(){
-  farmSettings={typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:'', test_data_mode:'loaded'};
+  farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:'', test_data_mode:'loaded'};
   loadDemoTestData();
 }
 // Populates the app with the built-in demo dataset: breeds, fodder types,
@@ -1654,6 +1672,7 @@ async function loadAll(){
     ensureTbTestMedicineType();
     farmSettings= fs?JSON.parse(fs):{typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:'', test_data_mode:'loaded'};
     if(farmSettings.typical_gestation_days==null) farmSettings.typical_gestation_days=283;
+    if(farmSettings.manage_fodder_spend==null) farmSettings.manage_fodder_spend=true;
     if(farmSettings.cph==null) farmSettings.cph='';
     if(farmSettings.test_data_mode==null) farmSettings.test_data_mode='loaded';
     userSettings= us?JSON.parse(us):{use_ai:false, groq_api_key:null, mute_weighing_notification:false};
@@ -3250,14 +3269,52 @@ function medicineCabinetAttentionGroups(){
   ].filter(g=>g.items.length).map(g=>({...g, count:g.items.length}));
 }
 let expandedMedCabAttentionKey=null;
+// The handful of one-time setup essentials a new farm needs before the
+// app is actually usable day to day — surfaced on Attention so a new
+// farmer (or a new co-farmer on an existing farm) can't miss them, same
+// as any other outstanding issue. Each maps to exactly where to go fix
+// it, via settingsSection matching the existing accordion keys in
+// Settings, so tapping one jumps straight there rather than just naming
+// the problem. cph and breeds/medicine cabinet are farm-wide (shared by
+// every farm member); the AI key check is deliberately per-user, since
+// that setting itself is per-user.
+function systemSettingsIssues(){
+  const issues=[];
+  if(!farmSettings.cph || !farmSettings.cph.trim()){
+    issues.push({key:'cph', label:'Farm CPH number not set', settingsSection:null});
+  }
+  if(!breeds.filter(b=>b.active).length){
+    issues.push({key:'breeds', label:'No breeds added yet', settingsSection:'breeds'});
+  }
+  if(farmSettings.manage_fodder_spend!==false && !feedTypes.filter(f=>f.active).length){
+    issues.push({key:'feedtypes', label:'No fodder types added yet', settingsSection:'feedtypes'});
+  }
+  if(!activeCabinetItems().length){
+    issues.push({key:'medtypes', label:'Medicine Cabinet is empty', settingsSection:'medtypes'});
+  }
+  if(userSettings.use_ai===true && !userSettings.groq_api_key){
+    issues.push({key:'aikey', label:'AI is turned on but no API key is set', settingsSection:'useai'});
+  }
+  return issues;
+}
 function renderInsights(){
   const flags=herdFlags();
   const flagsOpen=expandedFlagKey;
   const bcmsGroups=outstandingBcmsGroups();
   const medCabGroups=medicineCabinetAttentionGroups();
+  const sysIssues=systemSettingsIssues();
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Attention</span><span></span></div>
     <div class="body bigtext">
+      ${sysIssues.length?`
+      <label style="margin-top:4px;">System settings</label>
+      ${sysIssues.map(si=>`
+        <div class="row" data-gotosysissue="${si.key}" style="margin:6px 0;background:#f3f3f3;border-radius:8px;padding:10px 12px;">
+          <span style="width:10px;height:10px;border-radius:50%;background:var(--amber);flex-shrink:0;"></span>
+          <span style="flex:1;font-size:16px;font-weight:700;">${si.label}</span>
+          <span style="color:var(--grey);width:16px;height:16px;flex-shrink:0;">${icon('triangleRight')}</span>
+        </div>`).join('')}
+      `:''}
       ${bcmsGroups.length?`
       <label style="margin-top:4px;">Outstanding ${bcmsLink()} notifications</label>
       ${bcmsGroups.map(g=>{
@@ -3328,7 +3385,7 @@ function renderInsights(){
           </div>`:''}
         </div>`;
       }).join('')}` : ''}
-      ${(!bcmsGroups.length && !medCabGroups.length && !flags.length) ? '<div class="empty">Nothing needs attention right now.</div>' : ''}
+      ${(!bcmsGroups.length && !medCabGroups.length && !flags.length && !sysIssues.length) ? '<div class="empty">Nothing needs attention right now.</div>' : ''}
     </div>
     ${footerBar([
       {id:'insights-help', icon:'help', label:'Help'},
@@ -4563,7 +4620,7 @@ function renderHome(){
     const iconStyle = filled ? `color:${filledTextColor};` : (opts.color?`color:${opts.color};`:'');
     return `<button class="${cls}" id="${id}" ${opts.disabled?'disabled':''} style="${btnStyle}"><div class="ticon" style="${iconStyle}">${opts.iconHtml||icon(iconName)}${opts.badge?`<span class="tbadge">${opts.badge}</span>`:''}</div><div class="tlabel" style="${filled?'color:'+filledTextColor+';':''}">${label}</div></button>`;
   };
-  const readyInsights=herdFlags().reduce((s,f)=>s+(f.muted?0:f.count),0) + outstandingBcmsItems().length + medicineCabinetAttentionGroups().reduce((s,g)=>s+g.count,0);
+  const readyInsights=herdFlags().reduce((s,f)=>s+(f.muted?0:f.count),0) + outstandingBcmsItems().length + medicineCabinetAttentionGroups().reduce((s,g)=>s+g.count,0) + systemSettingsIssues().length;
   const standstill=standstillStatus();
   const unreportedMoves=unreportedMoveCount();
   // Fodder tile icon reflects current location: barn+snowflake (indoors/winter
@@ -4608,7 +4665,7 @@ function renderHome(){
           const label = outstanding.length ? `Farm damage<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${outstanding.length})</span>` : 'Farm damage<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>';
           return tile('home-damage','barn',label, worstUrgency?{fill:urgencyColorVar(worstUrgency), textColor: worstUrgency==='low'?'var(--ink)':undefined}:{});
         })()}
-        ${tile('home-feed',null,usingTypeCount>0?`Fodder<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${usingTypeCount} type${usingTypeCount===1?'':'s'} in use)</span>`:'Fodder<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',{iconHtml:fodderIconHtml, fill:usingTypeCount>0?'var(--green)':undefined})}
+        ${farmSettings.manage_fodder_spend===false?'':tile('home-feed',null,usingTypeCount>0?`Fodder<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${usingTypeCount} type${usingTypeCount===1?'':'s'} in use)</span>`:'Fodder<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',{iconHtml:fodderIconHtml, fill:usingTypeCount>0?'var(--green)':undefined})}
         ${tile('home-insights','insights',readyInsights>0?`Attention<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">${readyInsights} issues</span>`:'Attention<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',readyInsights>0?{fill:'var(--amber)'}:{})}
         ${tile('home-reports','reports','Reports<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>')}
       </div>
@@ -4618,7 +4675,6 @@ function renderHome(){
       {id:'home-feedback', icon:'email', label:'Feedback'},
       {id:'home-settings', icon:'gear', label:'Settings', primary:true},
       {id:'home-scan', icon:'camera', label:'Scan', primary:true},
-      {id:'home-home', icon:'home', label:'Home', home:true, active:true},
     ])}`;
 }
 
@@ -6087,7 +6143,11 @@ function renderSettings(){
       <div style="border-top:1px solid var(--line);margin:12px 0 4px;"></div>
 
       ${section('breeds', 'Breeds', breeds.length, breedsBody, breedsAddForm)}
-      ${section('feedtypes', 'Fodder types', feedTypes.length, feedTypesBody, feedTypesAddForm)}
+      <div class="formrow"><label>Manage fodder<br>spend? <button class="helpcircle" id="manageFodderSpendHelp" style="margin-left:2px;">?</button></label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="manageFodderSpendRadio" id="manageFodderSpendYes" ${farmSettings.manage_fodder_spend!==false?'checked':''}> Yes</label>
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="manageFodderSpendRadio" id="manageFodderSpendNo" ${farmSettings.manage_fodder_spend===false?'checked':''}> No</label>
+      </div></div>
+      ${section('feedtypes', 'Fodder', feedTypes.length, feedTypesBody, feedTypesAddForm)}
       ${section('medtypes', 'Medicine Cabinet', activeCabinetItems().length, medCabinetBody, '')}
       ${section('farmersvets', 'Farmers & vets', farmersVets.length, farmersVetsBody, farmersVetsAddForm)}
       ${section('testdata', 'Test data', '', testDataBody, '')}
@@ -8047,7 +8107,8 @@ function wireView(){
     };
     document.getElementById('home-weigh').onclick=()=>{ view='weigh'; weighTarget=null; weighDate=todayStr(); weighSessionRecordId=null; currentBcsValue=undefined; weighInlineSearchTerm=''; cameFromSummary=false; render(); };
     document.getElementById('home-damage').onclick=()=>{ view='damage'; expandedDamageId=null; render(); };
-    document.getElementById('home-feed').onclick=()=>{ view='feed'; feedTarget=null; feedLastDate=null; render(); };
+    const homeFeedBtn=document.getElementById('home-feed');
+    if(homeFeedBtn) homeFeedBtn.onclick=()=>{ view='feed'; feedTarget=null; feedLastDate=null; render(); };
     document.getElementById('home-insights').onclick=()=>{ view='insights'; render(); };
     document.getElementById('home-reports').onclick=()=>{ view='reports'; render(); };
     document.getElementById('home-feedback').onclick=()=>{ window.open('mailto:ATHENAXltd@gmail.com?subject='+encodeURIComponent('aBC Stockman feedback')+'&body='+encodeURIComponent('We can only make aBC Stockman better with your feedback. Please let us know of any bugs or missing functionality. Give as much detail as possible and we\u2019ll try our best to make it reality. ')); };
@@ -8357,6 +8418,12 @@ function wireView(){
       render();
     });
     document.querySelectorAll('[data-gotocabinetitem]').forEach(el=>el.onclick=()=>goToCabinetItem(el.dataset.gotocabinetitem));
+    document.querySelectorAll('[data-gotosysissue]').forEach(el=>el.onclick=()=>{
+      const issue=systemSettingsIssues().find(si=>si.key===el.dataset.gotosysissue);
+      view='settings';
+      settingsOpenSection = issue?issue.settingsSection:null;
+      render();
+    });
     document.querySelectorAll('[data-gotobcms]').forEach(el=>el.onclick=()=>{
       const [kind, id]=el.dataset.gotobcms.split(':');
       if(kind==='move'){
@@ -9207,6 +9274,10 @@ Rules:
     document.getElementById('useAnimalNamesHelp').onclick=(e)=>{ e.stopPropagation(); showInfoModal('\u2022 Yes: show the animal\u2019s name (or Mgmt ID if no name) with a short EID reference.\n\n\u2022 No: show the full EID only, everywhere \u2014 Mgmt ID and name are hidden.'); };
     document.getElementById('useAnimalNamesYes').onchange=async()=>{ farmSettings.use_animal_names=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by name.'); render(); showSaveToast('Updated'); };
     document.getElementById('useAnimalNamesNo').onchange=async()=>{ farmSettings.use_animal_names=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by tag number.'); render(); showSaveToast('Updated'); };
+    document.getElementById('manageFodderSpendYes').onchange=async()=>{ farmSettings.manage_fodder_spend=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Fodder spend is now tracked \u2014 the Fodder tile is back on Home.'); render(); showSaveToast('Updated'); };
+    document.getElementById('manageFodderSpendNo').onchange=async()=>{ farmSettings.manage_fodder_spend=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Fodder spend is no longer tracked \u2014 the Fodder tile is hidden on Home. Fodder types can still be managed here in Settings.'); render(); showSaveToast('Updated'); };
+    const manageFodderSpendHelpBtn=document.getElementById('manageFodderSpendHelp');
+    if(manageFodderSpendHelpBtn) manageFodderSpendHelpBtn.onclick=()=>{ showInfoModal('If you don\u2019t want to track fodder purchases/usage or costs, turn this off \u2014 the Fodder tile disappears from Home. You can still manage your list of fodder types here in Settings either way.'); };
     const useAiYesEl=document.getElementById('useAiYes');
     if(useAiYesEl) useAiYesEl.onchange=async()=>{ userSettings.use_ai=true; await persistAll(); await syncUserSettingsToSupabase(); logMsg('AI (Ask) turned on.'); render(); showSaveToast('Updated'); };
     const useAiNoEl=document.getElementById('useAiNo');
