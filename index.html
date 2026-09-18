@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17n';
+const APP_BUILD_VERSION = '2026-09-17o';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,14 @@ const APP_BUILD_VERSION = '2026-09-17n';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17o',
+    date: '17 Sep 2026',
+    bullets: [
+      "Reports: Ask is now the green filled button in the footer, since it's the main action on that screen.",
+      "Injury AI analysis is back: with AI turned on and a photo attached, an \u201cAnalyse injury\u201d link appears (with a clear vet-consultation warning first) \u2014 the result is saved and shown alongside the quick check every time you view the injury afterwards. Changing the photo clears any existing analysis and brings the link back."
+    ]
+  },
   {
     version: '2026-09-17n',
     date: '17 Sep 2026',
@@ -4037,7 +4045,7 @@ function renderReports(){
     </div>
     ${footerBar([
       {id:'reports-help', icon:'help', label:'Help'},
-      ...(farmSettings.use_ai===true?[{id:'rep-ask', icon:'questionMark', label:'Ask', bordered:true}]:[]),
+      ...(farmSettings.use_ai===true?[{id:'rep-ask', icon:'questionMark', label:'Ask', primary:true}]:[]),
       {id:'reports-home', icon:'home', label:'Home', home:true},
     ])}`;
 }
@@ -6051,10 +6059,23 @@ function renderInjury(){
           <div class="formrow compact"><label style="font-size:13px;">Cause / notes</label><div class="formctrl"><input type="text" value="${escapeHtml([inj.cause,inj.notes].filter(Boolean).join(' \u2014 '))}" readonly data-viewtext="${escapeHtml([inj.cause,inj.notes].filter(Boolean).join('\n\n')||'(none given)')}" style="background:#f3f3f3;color:var(--grey);cursor:pointer;font-size:14.5px;"></div></div>
           `}
 
-          ${qc?`<div style="background:#f3f3f3;border-radius:8px;padding:9px 12px;margin:8px 0;display:flex;gap:8px;align-items:flex-start;">
-            <span style="width:9px;height:9px;border-radius:50%;background:${qc.color};flex-shrink:0;margin-top:5px;"></span>
-            <div><div style="font-size:13px;color:var(--grey);font-weight:700;text-transform:uppercase;">From the quick check</div><div style="font-size:14px;">${qc.text}</div></div>
-          </div>`:''}
+          ${(()=>{
+            const showAnalysing = inj.analysis_status==='analyzing';
+            const showAnalyseLink = farmSettings.use_ai===true && hasPhoto && !inj.ai_diagnosis && !showAnalysing;
+            if(!qc && !inj.ai_diagnosis && !showAnalyseLink && !showAnalysing) return '';
+            return `<div style="background:#f3f3f3;border-radius:8px;padding:9px 12px;margin:8px 0;">
+              ${qc?`<div style="display:flex;gap:8px;align-items:flex-start;">
+                <span style="width:9px;height:9px;border-radius:50%;background:${qc.color};flex-shrink:0;margin-top:5px;"></span>
+                <div style="font-size:14px;">${qc.text}</div>
+              </div>`:''}
+              ${inj.ai_diagnosis?`<div style="display:flex;gap:8px;align-items:flex-start;${qc?'margin-top:8px;':''}">
+                <span style="width:9px;height:9px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:5px;"></span>
+                <div style="font-size:14px;">AI read: ${escapeHtml(inj.ai_diagnosis)}${inj.ai_treatment?' '+escapeHtml(inj.ai_treatment):''}${inj.ai_vet_recommended?' <b style="color:var(--red);">Vet recommended.</b>':''}</div>
+              </div>`:''}
+              ${showAnalysing?`<div style="font-size:14px;color:var(--grey);${qc?'margin-top:8px;':''}">Analysing\u2026</div>`:''}
+              ${showAnalyseLink?`<button data-analyseinjury="${inj.id}" style="background:none;border:none;color:var(--link);font-size:14px;font-weight:700;padding:0;cursor:pointer;${qc?'margin-top:8px;':''}">Analyse injury</button>`:''}
+            </div>`;
+          })()}
 
           ${isActive?`
           ${photoCaptureBlockModal('injrow'+inj.id, inj.photo_data)}
@@ -10768,8 +10789,15 @@ Rules:
   }
   if(view==='injury'){
     document.querySelector('[data-injback]').onclick=()=>{healthTarget=null; view='detail'; render();};
-    document.getElementById('inj-help').onclick=()=>{ showInfoModal('\u2022 Active injuries are highlighted red and can be amended as required \u2014 changes to free text boxes save when you click outside them.\n\n\u2022 Previous injuries can be viewed.\n\n\u2022 The number of injuries affects the animal\u2019s health score (the more injuries, the lower the score) and sell recommendations.\n\n\u2022 Click the Add button to add a new injury.\n\n\u2022 Add medicine links whichever injury is expanded to the medicine you give for it.\n\n\u2022 Tick off injuries as they recover/heal.\n\n\u2022 Later functionality: photo of the injury will be analysed and recommendations given.'); };
+    document.getElementById('inj-help').onclick=()=>{ showInfoModal('\u2022 Active injuries are highlighted red and can be amended as required \u2014 changes to free text boxes save when you click outside them.\n\n\u2022 Previous injuries can be viewed.\n\n\u2022 The number of injuries affects the animal\u2019s health score (the more injuries, the lower the score) and sell recommendations.\n\n\u2022 Click the Add button to add a new injury.\n\n\u2022 Add medicine links whichever injury is expanded to the medicine you give for it.\n\n\u2022 Tick off injuries as they recover/heal.\n\n\u2022 With AI turned on and a photo attached, \u201cAnalyse injury\u201d reads the photo for guidance on how to proceed \u2014 always guidance only, never a substitute for a vet.'); };
     document.getElementById('inj-add').onclick=()=>{ injAddPhoto=null; view='injuryAdd'; render(); };
+    document.querySelectorAll('[data-analyseinjury]').forEach(el=>el.onclick=()=>{
+      const inj=injuryRecords.find(r=>r.id===el.dataset.analyseinjury);
+      if(!inj) return;
+      showConfirmModal('WARNING: analysis of the injury is for guidance only. You must consult a vet for advice before taking any action.', ()=>{
+        analyzeInjury(inj);
+      }, null, 'Yes', 'No');
+    });
     document.getElementById('inj-addmedicine').onclick=()=>{
       // Only offer to link when exactly one injury is expanded — the
       // accordion behaviour above guarantees at most one, so this is
@@ -10875,9 +10903,12 @@ Rules:
     injuryRecords.filter(r=>r.animal_id===healthTarget && !r.resolved_at && expandedInjuryIds.has(r.id)).forEach(inj=>{
       wirePhotoCaptureModal('injrow'+inj.id, async(dataUrl)=>{
         inj.photo_data=dataUrl;
-        // A replaced photo makes any existing AI diagnosis stale — clear it
-        // and re-queue for analysis, same as a brand-new photo would be.
-        inj.analysis_status='pending';
+        // A replaced photo makes any existing AI analysis stale and no
+        // longer describes what's actually in the photo now — clear it.
+        // Deliberately NOT auto-queued for re-analysis: analysis only
+        // ever runs from the explicit "Analyse injury" link now, after
+        // the vet-consultation warning, never silently in the background.
+        inj.analysis_status=null;
         inj.ai_diagnosis=null; inj.ai_treatment=null; inj.ai_confidence=null; inj.ai_vet_recommended=null; inj.analyzed_at=null;
         await persistAll();
         await syncInjuryToSupabase(inj);
@@ -10919,7 +10950,7 @@ Rules:
         severity: levelRaw?parseInt(levelRaw,10):null,
         notes: document.getElementById('inj-notes').value.trim()||null,
         checklist, recorded_at:new Date().toISOString(), resolved_at:null,
-        analysis_status: injAddPhoto ? 'pending' : null, ai_diagnosis:null, ai_treatment:null, ai_confidence:null, ai_vet_recommended:null, analyzed_at:null,
+        analysis_status: null, ai_diagnosis:null, ai_treatment:null, ai_confidence:null, ai_vet_recommended:null, analyzed_at:null,
         farmer_id:currentFarmerId,
       };
       injuryRecords.push(newInjury);
