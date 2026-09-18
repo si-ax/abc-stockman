@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17h';
+const APP_BUILD_VERSION = '2026-09-17i';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-17h';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17i',
+    date: '17 Sep 2026',
+    bullets: [
+      "Fixed the follow-on bug from yesterday's fix: the backup AI model for reading photos turned out not to actually support photos at all, so it was hard-failing every time it kicked in. Removed it \u2014 photo reading now goes straight to the one model confirmed to work, instead of via a broken safety net."
+    ]
+  },
   {
     version: '2026-09-17h',
     date: '17 Sep 2026',
@@ -1212,7 +1219,15 @@ function friendlyAiError(err){
 // Each list tries a second candidate on a 404 (model retired) as well as
 // the usual 429/5xx, same defence the old Gemini implementation had.
 // Worth rechecking the deprecations page occasionally as models move on.
-const GROQ_VISION_MODELS=['qwen/qwen3.6-27b', 'openai/gpt-oss-120b'];
+// qwen/qwen3.6-27b is currently the only Groq model confirmed to actually
+// support image input (openai/gpt-oss-120b, tried as a "fallback" here
+// briefly, turned out to be text-only and hard-failed every vision call
+// with a 400 — removed). It's also a Groq "preview" model, meaning it
+// could itself be pulled with little notice the same way llama-4-scout
+// was; worth rechecking console.groq.com/docs/vision if this starts
+// throwing 404s again, since there may not be a second real option to
+// fall back to at that point.
+const GROQ_VISION_MODELS=['qwen/qwen3.6-27b'];
 const GROQ_TEXT_MODELS=['openai/gpt-oss-20b', 'openai/gpt-oss-120b'];
 const GROQ_TIMEOUT_MS=12000; // Groq's whole point is speed — no reason to wait as long as Gemini needed
 // Shared low-level caller — every AI feature in the app goes through
