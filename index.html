@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17k';
+const APP_BUILD_VERSION = '2026-09-17l';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,14 @@ const APP_BUILD_VERSION = '2026-09-17k';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17l',
+    date: '17 Sep 2026',
+    bullets: [
+      "Fixed the Fodder tile's sizing glitch when Manage fodder spend is switched back on \u2014 it's now properly greyed out and disabled when off, instead of being hidden from the layout entirely.",
+      "AI (Use AI?/the Groq key) is now one shared setting for the whole farm, not per-person \u2014 turning it on or adding a key applies to everyone signed in to this farm. Chosen to make it as easy as possible to get a new person using the app without their own Groq signup; per-user keys may come back later if that trade-off stops making sense."
+    ]
+  },
   {
     version: '2026-09-17k',
     date: '17 Sep 2026',
@@ -633,8 +641,10 @@ async function resolveFarmMembership(){
     farmSettings.typical_gestation_days = remoteFarmSettings.typical_gestation_days??283;
     farmSettings.use_animal_names = remoteFarmSettings.use_animal_names!==false;
     farmSettings.manage_fodder_spend = remoteFarmSettings.manage_fodder_spend!==false;
+    farmSettings.use_ai = !!remoteFarmSettings.use_ai;
+    farmSettings.groq_api_key = remoteFarmSettings.groq_api_key||null;
   } else {
-    await sb.from('farm_settings').insert({ farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false, manage_fodder_spend:farmSettings.manage_fodder_spend!==false });
+    await sb.from('farm_settings').insert({ farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false, manage_fodder_spend:farmSettings.manage_fodder_spend!==false, use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null });
   }
 
   // Per-user settings — this signed-in person's own row only, never
@@ -642,11 +652,9 @@ async function resolveFarmMembership(){
   const { data: remoteUserSettings, error: usErr } = await sb.from('user_settings').select('*').eq('user_id', authUser.id).maybeSingle();
   if(usErr){ authError = usErr.message; return; }
   if(remoteUserSettings){
-    userSettings.use_ai = !!remoteUserSettings.use_ai;
-    userSettings.groq_api_key = remoteUserSettings.groq_api_key||null;
     userSettings.mute_weighing_notification = !!remoteUserSettings.mute_weighing_notification;
   } else {
-    await sb.from('user_settings').insert({ user_id:authUser.id, use_ai:!!userSettings.use_ai, groq_api_key:userSettings.groq_api_key||null, mute_weighing_notification:!!userSettings.mute_weighing_notification });
+    await sb.from('user_settings').insert({ user_id:authUser.id, mute_weighing_notification:!!userSettings.mute_weighing_notification });
   }
 
   // Animal event history — stored flat in Supabase (one row per event),
@@ -805,18 +813,22 @@ async function syncFarmSettingsToSupabase(){
     farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null,
     typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false,
     manage_fodder_spend:farmSettings.manage_fodder_spend!==false,
+    use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null,
   });
   if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync farm settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
 }
 // Per-user — deliberately keyed by user_id alone, never farm_id. See the
-// note on the userSettings declaration for why this isn't shared.
+// note on the userSettings declaration for why this isn't shared. Use
+// AI?/the Groq key moved to farmSettings (one shared key for the whole
+// farm, on purpose — see the note there) — this only carries the mute
+// preference now.
 async function syncUserSettingsToSupabase(){
   if(!authUser) return;
   const { error } = await sb.from('user_settings').upsert({
-    user_id:authUser.id, use_ai:!!userSettings.use_ai, groq_api_key:userSettings.groq_api_key||null,
+    user_id:authUser.id,
     mute_weighing_notification:!!userSettings.mute_weighing_notification,
   });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync your AI settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync your settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
 }
 // Insert-only — an event is a historical fact, never edited or deleted
 // once logged, so this only ever needs to add one new row.
@@ -848,7 +860,7 @@ async function syncBreedingRecordToSupabase(rec){
 // the breed isn't recognised, or the call fails — the existing 18/30
 // default is a perfectly fine fallback either way.
 async function suggestBreedPrimeAgeGroq(breedName){
-  if(!userSettings.groq_api_key) return null;
+  if(!farmSettings.groq_api_key) return null;
   const prompt='For the cattle breed "'+breedName+'" as commonly reared in the UK, what is a typical age range in months during which a commercially finished animal of this breed is at its prime condition for sale? Base this on the breed\u2019s general reputation for maturation rate (traditional/native breeds often finish later than fast-growing continental breeds) \u2014 a general estimate is fine, this doesn\u2019t need to be precise. Reply with ONLY a JSON object and nothing else, no markdown fences, no explanation: {"min_months": a whole number, "max_months": a whole number}. If "'+breedName+'" isn\u2019t a real cattle breed you recognise, or you\u2019re not reasonably confident, reply with {"min_months": null, "max_months": null} instead of guessing.';
   let text;
   try{
@@ -1273,7 +1285,7 @@ async function discoverGroqVisionModel(apiKey){
 // text-only.
 async function callGroq(promptText, imagePart, opts){
   opts=opts||{};
-  const apiKey=userSettings.groq_api_key;
+  const apiKey=farmSettings.groq_api_key;
   if(!apiKey) throw new Error('No Groq API key set');
   let models;
   if(imagePart){
@@ -1530,11 +1542,15 @@ let backupRestoreFile=null, backupRestoreBusy=false, backupRestoreError='', back
 let usingFeed=true, usingFeedLog=[];
 // feedRecords is now a FARM-WIDE ledger, not per-animal: [{id, feed_type, sack_price, sacks, start_date, end_date}]
 // Cost per animal is calculated (see feedCostTotal), never entered directly — see mockup Screen 19.
-let farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:''};
-// Per-signed-in-user, not per-farm — each person's own Groq key has its
-// own daily quota, so this deliberately does NOT live in farmSettings or
-// sync to other farm members. See syncUserSettingsToSupabase.
-let userSettings={use_ai:false, groq_api_key:null, mute_weighing_notification:false};
+let farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:'', use_ai:false, groq_api_key:null};
+// Per-signed-in-user, not per-farm. Use AI?/the Groq key used to live
+// here (one key, one quota, per person) but moved to farmSettings —
+// deliberately a single shared key for the whole farm now, chosen to
+// keep onboarding a new farm member as frictionless as possible (no
+// separate Groq signup needed for them). Worth reconsidering per-user
+// keys again later if quota fairness between members becomes a real
+// issue; for now this is just the mute preference.
+let userSettings={mute_weighing_notification:false};
 // ---- Device pairing / login (Farm ID + Passcode) ----
 // deviceFarmCode/deviceFarmName persist once this device is paired to a
 // farm — that's the rare "set up this device" step. currentFarmerId is the
@@ -1620,7 +1636,7 @@ function ensureDemoTbTests(){
 }
 
 function genSeed(){
-  farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:'', test_data_mode:'loaded'};
+  farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:'', use_ai:false, groq_api_key:null, test_data_mode:'loaded'};
   loadDemoTestData();
 }
 // Populates the app with the built-in demo dataset: breeds, fodder types,
@@ -1776,9 +1792,9 @@ async function loadAll(){
     if(farmSettings.manage_fodder_spend==null) farmSettings.manage_fodder_spend=true;
     if(farmSettings.cph==null) farmSettings.cph='';
     if(farmSettings.test_data_mode==null) farmSettings.test_data_mode='loaded';
-    userSettings= us?JSON.parse(us):{use_ai:false, groq_api_key:null, mute_weighing_notification:false};
-    if(userSettings.use_ai==null) userSettings.use_ai=false;
-    if(userSettings.groq_api_key===undefined) userSettings.groq_api_key=null;
+    userSettings= us?JSON.parse(us):{mute_weighing_notification:false};
+    if(farmSettings.use_ai==null) farmSettings.use_ai=false;
+    if(farmSettings.groq_api_key===undefined) farmSettings.groq_api_key=null;
     damageRecords= dr?JSON.parse(dr):[];
     moveRecords= mv?JSON.parse(mv):[];
     farmersVets= fv?JSON.parse(fv):[];
@@ -2911,7 +2927,7 @@ function openInjuries(animalId){return injuryRecords.filter(r=>r.animal_id===ani
 
 // ================= AI INSIGHTS (Claude Vision, runs automatically once online) =================
 async function analyzeInjury(rec){
-  if(!userSettings.groq_api_key){
+  if(!farmSettings.groq_api_key){
     rec.analysis_status='failed';
     logMsg('Insights: analysis needs a Groq API key set up in Settings \u2014 add yours to enable this.');
     await persistAll();
@@ -3376,9 +3392,10 @@ let expandedMedCabAttentionKey=null;
 // as any other outstanding issue. Each maps to exactly where to go fix
 // it, via settingsSection matching the existing accordion keys in
 // Settings, so tapping one jumps straight there rather than just naming
-// the problem. cph and breeds/medicine cabinet are farm-wide (shared by
-// every farm member); the AI key check is deliberately per-user, since
-// that setting itself is per-user.
+// the problem. All five checks here are farm-wide (shared by every farm
+// member) — including the AI key, which moved from per-user to a single
+// shared farm key (see the note on the userSettings/farmSettings
+// declarations for why).
 function systemSettingsIssues(){
   const issues=[];
   if(!farmSettings.cph || !farmSettings.cph.trim()){
@@ -3393,7 +3410,7 @@ function systemSettingsIssues(){
   if(!activeCabinetItems().length){
     issues.push({key:'medtypes', label:'Medicine Cabinet is empty', settingsSection:'medtypes'});
   }
-  if(userSettings.use_ai===true && !userSettings.groq_api_key){
+  if(farmSettings.use_ai===true && !farmSettings.groq_api_key){
     issues.push({key:'aikey', label:'AI is turned on but no API key is set', settingsSection:'useai'});
   }
   return issues;
@@ -3991,7 +4008,7 @@ function renderReports(){
         ${tile('rep-sellno','gavel','Animals to keep',{color:'var(--red)'})}
         ${tile('rep-roi','roi','ROI<br><span style="font-size:11px;">(cost vs current)</span>',{color:'var(--grey)'})}
         ${tile('rep-realized','roi','Realised profit/loss<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
-        ${userSettings.use_ai===true?tile('rep-ask','questionMark','Ask',{color:'var(--primary)'}):''}
+        ${farmSettings.use_ai===true?tile('rep-ask','questionMark','Ask',{color:'var(--primary)'}):''}
       </div>
     </div>
     ${footerBar([
@@ -4766,7 +4783,13 @@ function renderHome(){
           const label = outstanding.length ? `Farm damage<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${outstanding.length})</span>` : 'Farm damage<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>';
           return tile('home-damage','barn',label, worstUrgency?{fill:urgencyColorVar(worstUrgency), textColor: worstUrgency==='low'?'var(--ink)':undefined}:{});
         })()}
-        <div style="${farmSettings.manage_fodder_spend===false?'visibility:hidden;':''}">${tile('home-feed',null,usingTypeCount>0?`Fodder<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${usingTypeCount} type${usingTypeCount===1?'':'s'} in use)</span>`:'Fodder<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',{iconHtml:fodderIconHtml, fill:usingTypeCount>0?'var(--green)':undefined})}</div>
+        ${(()=>{
+          const fodderOff = farmSettings.manage_fodder_spend===false;
+          const label = fodderOff ? 'Fodder<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>'
+            : usingTypeCount>0 ? `Fodder<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${usingTypeCount} type${usingTypeCount===1?'':'s'} in use)</span>`
+            : 'Fodder<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>';
+          return tile('home-feed',null,label,{iconHtml:fodderIconHtml, fill:(!fodderOff && usingTypeCount>0)?'var(--green)':undefined, disabled:fodderOff});
+        })()}
         ${tile('home-insights','insights',readyInsights>0?`Attention<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">${readyInsights} issues</span>`:'Attention<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',readyInsights>0?{fill:'var(--amber)'}:{})}
         ${tile('home-reports','reports','Reports<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>')}
       </div>
@@ -6261,15 +6284,15 @@ function renderSettings(){
         </button>
         ${settingsOpenSection==='useai'?`<div class="damagepanel">
           <div class="formrow" style="border-bottom:none;margin-top:0;"><label>Use AI?</label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
-            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiYes" ${userSettings.use_ai===true?'checked':''}> Yes</label>
-            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiNo" ${userSettings.use_ai!==true?'checked':''}> No</label>
+            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiYes" ${farmSettings.use_ai===true?'checked':''}> Yes</label>
+            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiNo" ${farmSettings.use_ai!==true?'checked':''}> No</label>
           </div></div>
-          <div style="font-size:13px;color:var(--grey);margin-top:8px;">Turns on the "Ask" feature in Reports \u2014 lets you type or speak a question and get an answer using your own farm records, plus general farming knowledge. Also used for enhanced tag reading \u2014 when scanning an EID tag, this is tried first and reads angled, worn, or stylised tags far better than the built-in offline reader (which is still used as an automatic fallback if there's no signal or the request fails, so tag scanning always still works either way). Off by default. You'll be limited to your own usage allowance per day; the AI provider only sees your question (for Ask) or the tag photo (for tag reading), plus a summary of your records needed to answer it, nothing more.</div>
-          ${userSettings.use_ai===true?`
+          <div style="font-size:13px;color:var(--grey);margin-top:8px;">Turns on the "Ask" feature in Reports \u2014 lets you type or speak a question and get an answer using your own farm records, plus general farming knowledge. Also used for enhanced tag reading \u2014 when scanning an EID tag, this is tried first and reads angled, worn, or stylised tags far better than the built-in offline reader (which is still used as an automatic fallback if there's no signal or the request fails, so tag scanning always still works either way). Off by default. This is a farm-wide setting, shared with everyone signed in to this farm \u2014 turning it on or off here changes it for all of you. The AI provider only sees your question (for Ask) or the tag photo (for tag reading), plus a summary of your records needed to answer it, nothing more.</div>
+          ${farmSettings.use_ai===true?`
           <div style="border-top:1px solid var(--line);margin:14px 0 0;padding-top:14px;">
             <label style="margin-top:0;">Groq API key</label>
-            <input type="text" id="groqApiKey" placeholder="Paste your key here" value="${userSettings.groq_api_key?escapeHtml(userSettings.groq_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
-            <div style="font-size:13px;color:var(--grey);margin-top:8px;">Free to get, no credit card needed \u2014 sign up with any email (a Google account isn't required), with a daily usage allowance (that allowance is shared across every scan/question made on this key, so is worth keeping an eye on if several people share one). The key is stored only on this device and sent only to Groq.</div>
+            <input type="text" id="groqApiKey" placeholder="Paste your key here" value="${farmSettings.groq_api_key?escapeHtml(farmSettings.groq_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <div style="font-size:13px;color:var(--grey);margin-top:8px;">One key for the whole farm \u2014 whoever enters it here, everyone signed in to this farm uses it (and shares its daily usage allowance, so is worth keeping an eye on with several people scanning). Free to get, no credit card needed, sign up with any email (a Google account isn't required).</div>
             <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--link);">Get a Groq API key from console.groq.com &rarr;</a>
           </div>`:''}
         </div>`:''}
@@ -6520,7 +6543,7 @@ async function readEidFromPhotoTesseract(file, statusEl){
 // throws on any failure so the caller can fall back cleanly rather than
 // silently returning a wrong answer.
 async function readEidFromPhotoGroq(file, statusEl){
-  if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
+  if(!farmSettings.groq_api_key) throw new Error('No Groq key configured');
   if(statusEl){ statusEl.style.display='block'; statusEl.style.color='var(--grey)'; statusEl.textContent='Reading tag\u2026'; }
   updateScanningOverlay('Reading tag\u2026');
   const base64=await new Promise((resolve,reject)=>{
@@ -6580,7 +6603,7 @@ async function readEidFromPhotoGroq(file, statusEl){
 // without a Groq key this feature just isn't available, and the caller
 // says so up front.
 async function readAnimalFromPassportGroq(file){
-  if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
+  if(!farmSettings.groq_api_key) throw new Error('No Groq key configured');
   updateScanningOverlay('Reading passport\u2026');
   const base64=await new Promise((resolve,reject)=>{
     const reader=new FileReader();
@@ -6607,13 +6630,13 @@ async function readAnimalFromPassportGroq(file){
 // instead of the sandbox-only Claude endpoint, so Ask actually works
 // once this app is used outside a Claude preview.
 async function askFarmQuestionGroq(promptText){
-  if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
+  if(!farmSettings.groq_api_key) throw new Error('No Groq key configured');
   const text=await callGroq(promptText, null, {json:true, maxTokens:1024, timeoutMs:20000});
   try{ return parseAiJson(text); }
   catch(parseErr){ throw new Error('Groq reply couldn\u2019t be read as data: \u201c'+text.slice(0,120)+'\u201d'); }
 }
 async function readEidFromPhoto(file, statusEl){
-  if(userSettings.use_ai===true && userSettings.groq_api_key){
+  if(farmSettings.use_ai===true && farmSettings.groq_api_key){
     try{
       const digits=await readEidFromPhotoGroq(file, statusEl);
       return {digits, engineUsed:'groq'};
@@ -6688,7 +6711,7 @@ function performTagScan(mode, statusElId){
         // immediately instead of needing another round to dig it out.
         let engineNote = result.engineUsed==='groq' ? ' (read via AI)'
           : result.aiError ? ' (AI reader failed \u2014 '+result.aiError.slice(0,150)+' \u2014 then fell back to the offline reader, which also couldn\u2019t read it)'
-          : (userSettings.use_ai===true && userSettings.groq_api_key) ? '' : ' (offline reader \u2014 AI key not set up)';
+          : (farmSettings.use_ai===true && farmSettings.groq_api_key) ? '' : ' (offline reader \u2014 AI key not set up)';
         const msg='Couldn\u2019t read a tag number from that photo'+engineNote+' \u2014 try again with better light/focus, or enter the EID manually.';
         if(statusEl){ statusEl.style.color='var(--red)'; statusEl.textContent=msg; } else showInfoModal(msg);
         return;
@@ -8991,7 +9014,7 @@ function wireView(){
       if(!question){ showInfoModal('Type or dictate a question first.'); return; }
       askQuestionText=question; askLoading=true; askAnswer=null; askError=null; render();
       try{
-        if(!userSettings.groq_api_key) throw new Error('No Groq key configured');
+        if(!farmSettings.groq_api_key) throw new Error('No Groq key configured');
         const context=buildFarmDataContext();
         const promptText=`You are answering a beef farmer's question about their own farm records, using ONLY the JSON data below plus general farming/animal husbandry knowledge where genuinely relevant (e.g. explaining a term, or general advice). Never invent data that isn't in the JSON — if the data needed to answer isn't there, say so plainly.
 
@@ -9009,7 +9032,7 @@ Rules:
         const parsed=await askFarmQuestionGroq(promptText);
         askAnswer={ answer:parsed.answer||'', records:(parsed.records||[]).slice(0,20), more_available:!!parsed.more_available };
       }catch(e){
-        askError = userSettings.groq_api_key
+        askError = farmSettings.groq_api_key
           ? friendlyAiError(e)
           : 'Couldn\u2019t get an answer \u2014 add a Groq API key in Settings > Use AI? first.';
       }
@@ -9177,7 +9200,7 @@ Rules:
     // resume-after-reload flow in the app boot sequence).
     const scanPassportBtn=document.getElementById('scanPassportBtn');
     if(scanPassportBtn) scanPassportBtn.onclick=()=>{
-      if(!(userSettings.use_ai===true && userSettings.groq_api_key)){
+      if(!(farmSettings.use_ai===true && farmSettings.groq_api_key)){
         showInfoModal('Scanning a passport needs AI turned on with a Groq API key set up in Settings \u2014 unlike tag scanning, there\u2019s no offline fallback for reading several fields off a document.', 'useai');
         return;
       }
@@ -9384,15 +9407,15 @@ Rules:
     const manageFodderSpendHelpBtn=document.getElementById('manageFodderSpendHelp');
     if(manageFodderSpendHelpBtn) manageFodderSpendHelpBtn.onclick=()=>{ showInfoModal('If you don\u2019t want to track fodder purchases/usage or costs, turn this off \u2014 the Fodder tile disappears from Home. You can still manage your list of fodder types here in Settings either way.'); };
     const useAiYesEl=document.getElementById('useAiYes');
-    if(useAiYesEl) useAiYesEl.onchange=async()=>{ userSettings.use_ai=true; await persistAll(); await syncUserSettingsToSupabase(); logMsg('AI (Ask) turned on.'); render(); showSaveToast('Updated'); };
+    if(useAiYesEl) useAiYesEl.onchange=async()=>{ farmSettings.use_ai=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('AI (Ask) turned on \u2014 shared farm-wide.'); render(); showSaveToast('Updated'); };
     const useAiNoEl=document.getElementById('useAiNo');
-    if(useAiNoEl) useAiNoEl.onchange=async()=>{ userSettings.use_ai=false; await persistAll(); await syncUserSettingsToSupabase(); logMsg('AI (Ask) turned off.'); render(); showSaveToast('Updated'); };
+    if(useAiNoEl) useAiNoEl.onchange=async()=>{ farmSettings.use_ai=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('AI (Ask) turned off.'); render(); showSaveToast('Updated'); };
     const groqKeyEl=document.getElementById('groqApiKey');
     if(groqKeyEl) groqKeyEl.onchange=async()=>{
-      userSettings.groq_api_key = groqKeyEl.value.trim() || null;
+      farmSettings.groq_api_key = groqKeyEl.value.trim() || null;
       await persistAll();
-      await syncUserSettingsToSupabase();
-      logMsg(userSettings.groq_api_key ? 'Groq API key saved.' : 'Groq API key removed \u2014 tag scans will use the built-in offline reader only.');
+      await syncFarmSettingsToSupabase();
+      logMsg(farmSettings.groq_api_key ? 'Groq API key saved \u2014 shared with everyone signed in to this farm.' : 'Groq API key removed \u2014 tag scans will use the built-in offline reader only.');
       showSaveToast('Updated');
     };
     const testDataClearEl=document.getElementById('testDataClear');
@@ -9519,7 +9542,7 @@ Rules:
       // Only auto-fill while these are still blank — never overwrite
       // something the farmer's already typed in themselves.
       if(minEl.value.trim()!=='' || maxEl.value.trim()!=='') return;
-      if(!(userSettings.use_ai===true && userSettings.groq_api_key)) return;
+      if(!(farmSettings.use_ai===true && farmSettings.groq_api_key)) return;
       showSaveToast('Searching for typical prime age for '+name+'\u2026');
       const suggestion=await suggestBreedPrimeAgeGroq(name);
       // The name field (or the whole form) may have moved on by the time
