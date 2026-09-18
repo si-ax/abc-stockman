@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17f';
+const APP_BUILD_VERSION = '2026-09-17h';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,22 @@ const APP_BUILD_VERSION = '2026-09-17f';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17h',
+    date: '17 Sep 2026',
+    bullets: [
+      "Found the real cause of the passport-scan failure: the specific AI model picked when Groq was set up had already been retired by Groq. Switched to current models, and added a fallback so a future retirement like this doesn't silently break everything again.",
+      "This also affected Ask and the breed Prime-age suggestion, which were quietly broken the same way \u2014 both fixed now too."
+    ]
+  },
+  {
+    version: '2026-09-17g',
+    date: '17 Sep 2026',
+    bullets: [
+      "Moved the \u201cManage fodder spend?\u201d toggle inside the Fodder expander in Settings, where it belongs.",
+      "Fixed the other Home tiles shifting position when Fodder's hidden \u2014 its spot in the layout now stays reserved (just invisible), instead of the grid reflowing around it."
+    ]
+  },
   {
     version: '2026-09-17f',
     date: '17 Sep 2026',
@@ -1185,35 +1201,41 @@ function friendlyAiError(err){
 // Groq — chosen over Gemini specifically for two reasons a real farmer
 // hits immediately: (1) signup only needs any email, not a Google
 // account, and (2) it's meaningfully faster, which matters when someone's
-// stood in a field waiting for a tag to be read. Vision model handles
-// photos (passport/tag/injury); the small instant text model handles
-// everything else (Ask, breed suggestions) since there's no reason to
-// pay the vision model's overhead when there's no image involved.
-const GROQ_VISION_MODEL='meta-llama/llama-4-scout-17b-16e-instruct';
-const GROQ_TEXT_MODEL='llama-3.1-8b-instant';
+// stood in a field waiting for a tag to be read. Vision candidates handle
+// photos (passport/tag/injury); text candidates handle everything else
+// (Ask, breed suggestions) since there's no reason to pay a vision
+// model's overhead when there's no image involved.
+// Groq retires model IDs on a real schedule (see console.groq.com/docs/
+// deprecations) — llama-4-scout and llama-3.1-8b-instant, both used here
+// originally, were already gone by the time this shipped, which is
+// exactly the failure mode a fixed single model name can't recover from.
+// Each list tries a second candidate on a 404 (model retired) as well as
+// the usual 429/5xx, same defence the old Gemini implementation had.
+// Worth rechecking the deprecations page occasionally as models move on.
+const GROQ_VISION_MODELS=['qwen/qwen3.6-27b', 'openai/gpt-oss-120b'];
+const GROQ_TEXT_MODELS=['openai/gpt-oss-20b', 'openai/gpt-oss-120b'];
 const GROQ_TIMEOUT_MS=12000; // Groq's whole point is speed — no reason to wait as long as Gemini needed
 // Shared low-level caller — every AI feature in the app goes through
 // this now, instead of each duplicating its own request/retry logic.
 // imagePart is optional: {mediaType, base64} for a vision call, omit for
-// text-only. Retries once on a transient (429/5xx) failure, since a
-// second attempt costs very little given how fast Groq responds.
+// text-only.
 async function callGroq(promptText, imagePart, opts){
   opts=opts||{};
   const apiKey=userSettings.groq_api_key;
   if(!apiKey) throw new Error('No Groq API key set');
-  const model=imagePart?GROQ_VISION_MODEL:GROQ_TEXT_MODEL;
+  const models=imagePart?GROQ_VISION_MODELS:GROQ_TEXT_MODELS;
   const content=imagePart
     ? [{type:'text', text:promptText}, {type:'image_url', image_url:{url:'data:'+imagePart.mediaType+';base64,'+imagePart.base64}}]
     : promptText;
-  const body={
-    model,
-    messages:[{role:'user', content}],
-    temperature: opts.temperature!=null?opts.temperature:0.2,
-    max_completion_tokens: opts.maxTokens||600,
-  };
-  if(opts.json) body.response_format={type:'json_object'};
   let lastErr;
-  for(let attempt=0; attempt<2; attempt++){
+  for(const model of models){
+    const body={
+      model,
+      messages:[{role:'user', content}],
+      temperature: opts.temperature!=null?opts.temperature:0.2,
+      max_completion_tokens: opts.maxTokens||600,
+    };
+    if(opts.json) body.response_format={type:'json_object'};
     const controller=new AbortController();
     const timeoutId=setTimeout(()=>controller.abort(), opts.timeoutMs||GROQ_TIMEOUT_MS);
     let resp;
@@ -1226,19 +1248,22 @@ async function callGroq(promptText, imagePart, opts){
       });
     }catch(networkErr){
       clearTimeout(timeoutId);
-      lastErr = networkErr.name==='AbortError' ? new Error('Groq timed out after '+((opts.timeoutMs||GROQ_TIMEOUT_MS)/1000)+'s') : networkErr;
+      lastErr = networkErr.name==='AbortError' ? new Error('Groq ('+model+') timed out after '+((opts.timeoutMs||GROQ_TIMEOUT_MS)/1000)+'s') : networkErr;
+      if(networkErr.name!=='AbortError') throw lastErr; // a hard connection failure won't fix itself by trying a different model name
       continue;
     }
     clearTimeout(timeoutId);
     if(resp.ok){
       const json=await resp.json();
       const text=json?.choices?.[0]?.message?.content;
-      if(!text) throw new Error('Groq returned no readable text');
+      if(!text) throw new Error('Groq ('+model+') returned no readable text');
       return text;
     }
     const errBody=await resp.text().catch(()=>'');
-    lastErr=new Error('Groq request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
-    const worthRetrying = resp.status===429 || resp.status>=500;
+    lastErr=new Error('Groq ('+model+') request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
+    // 404 = this model ID's been retired since this build shipped, worth
+    // trying the next candidate; 429/5xx = same reasoning as before.
+    const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
     if(!worthRetrying) throw lastErr;
   }
   throw lastErr;
@@ -4676,7 +4701,7 @@ function renderHome(){
           const label = outstanding.length ? `Farm damage<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${outstanding.length})</span>` : 'Farm damage<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>';
           return tile('home-damage','barn',label, worstUrgency?{fill:urgencyColorVar(worstUrgency), textColor: worstUrgency==='low'?'var(--ink)':undefined}:{});
         })()}
-        ${farmSettings.manage_fodder_spend===false?'':tile('home-feed',null,usingTypeCount>0?`Fodder<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${usingTypeCount} type${usingTypeCount===1?'':'s'} in use)</span>`:'Fodder<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',{iconHtml:fodderIconHtml, fill:usingTypeCount>0?'var(--green)':undefined})}
+        <div style="${farmSettings.manage_fodder_spend===false?'visibility:hidden;':''}">${tile('home-feed',null,usingTypeCount>0?`Fodder<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">(${usingTypeCount} type${usingTypeCount===1?'':'s'} in use)</span>`:'Fodder<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',{iconHtml:fodderIconHtml, fill:usingTypeCount>0?'var(--green)':undefined})}</div>
         ${tile('home-insights','insights',readyInsights>0?`Attention<br><span style="font-size:11px;font-weight:700;line-height:14px;display:inline-block;">${readyInsights} issues</span>`:'Attention<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>',readyInsights>0?{fill:'var(--amber)'}:{})}
         ${tile('home-reports','reports','Reports<br><span style="font-size:11px;line-height:14px;display:inline-block;">&nbsp;</span>')}
       </div>
@@ -6043,7 +6068,13 @@ function renderSettings(){
       <input type="number" id="newBreedMaxPrime" placeholder="e.g. 30">
     </div>`;
 
-  const feedTypesBody = sortedBreeds(feedTypes).map(f=>{
+  const feedTypesBody = `
+    <div class="formrow" style="margin-top:0;"><label>Manage fodder<br>spend? <button class="helpcircle" id="manageFodderSpendHelp" style="margin-left:2px;">?</button></label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
+      <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="manageFodderSpendRadio" id="manageFodderSpendYes" ${farmSettings.manage_fodder_spend!==false?'checked':''}> Yes</label>
+      <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="manageFodderSpendRadio" id="manageFodderSpendNo" ${farmSettings.manage_fodder_spend===false?'checked':''}> No</label>
+    </div></div>
+    <div style="border-top:1px solid var(--line);margin:12px 0 10px;"></div>
+  ` + (sortedBreeds(feedTypes).map(f=>{
     const last=lastFeedRecordForType(f.name);
     return `
     <div class="row" style="cursor:default;align-items:flex-start;">
@@ -6057,7 +6088,7 @@ function renderSettings(){
       </div>
       <button data-toggle-feedtype="${f.id}" title="${f.active?'Active \u2014 tap to deactivate':'Deactivated \u2014 tap to reactivate'}" style="background:none;border:none;width:30px;height:30px;flex-shrink:0;color:${f.active?'var(--grey)':'var(--red)'};padding:0;">${icon('noentry')}</button>
     </div>`;
-  }).join('') || '<div class="empty" style="padding:8px 4px;">No feed types yet.</div>';
+  }).join('') || '<div class="empty" style="padding:8px 4px;">No feed types yet.</div>');
   const feedTypesAddForm = `
     <div style="margin-top:10px;">
       <label>New fodder type name</label>
@@ -6154,10 +6185,6 @@ function renderSettings(){
       <div style="border-top:1px solid var(--line);margin:12px 0 4px;"></div>
 
       ${section('breeds', 'Breeds', breeds.length, breedsBody, breedsAddForm)}
-      <div class="formrow"><label>Manage fodder<br>spend? <button class="helpcircle" id="manageFodderSpendHelp" style="margin-left:2px;">?</button></label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
-        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="manageFodderSpendRadio" id="manageFodderSpendYes" ${farmSettings.manage_fodder_spend!==false?'checked':''}> Yes</label>
-        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="manageFodderSpendRadio" id="manageFodderSpendNo" ${farmSettings.manage_fodder_spend===false?'checked':''}> No</label>
-      </div></div>
       ${section('feedtypes', 'Fodder', feedTypes.length, feedTypesBody, feedTypesAddForm)}
       ${section('medtypes', 'Medicine Cabinet', activeCabinetItems().length, medCabinetBody, '')}
       ${section('farmersvets', 'Farmers & vets', farmersVets.length, farmersVetsBody, farmersVetsAddForm)}
@@ -9285,8 +9312,10 @@ Rules:
     document.getElementById('useAnimalNamesHelp').onclick=(e)=>{ e.stopPropagation(); showInfoModal('\u2022 Yes: show the animal\u2019s name (or Mgmt ID if no name) with a short EID reference.\n\n\u2022 No: show the full EID only, everywhere \u2014 Mgmt ID and name are hidden.'); };
     document.getElementById('useAnimalNamesYes').onchange=async()=>{ farmSettings.use_animal_names=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by name.'); render(); showSaveToast('Updated'); };
     document.getElementById('useAnimalNamesNo').onchange=async()=>{ farmSettings.use_animal_names=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by tag number.'); render(); showSaveToast('Updated'); };
-    document.getElementById('manageFodderSpendYes').onchange=async()=>{ farmSettings.manage_fodder_spend=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Fodder spend is now tracked \u2014 the Fodder tile is back on Home.'); render(); showSaveToast('Updated'); };
-    document.getElementById('manageFodderSpendNo').onchange=async()=>{ farmSettings.manage_fodder_spend=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Fodder spend is no longer tracked \u2014 the Fodder tile is hidden on Home. Fodder types can still be managed here in Settings.'); render(); showSaveToast('Updated'); };
+    const manageFodderSpendYesEl=document.getElementById('manageFodderSpendYes');
+    if(manageFodderSpendYesEl) manageFodderSpendYesEl.onchange=async()=>{ farmSettings.manage_fodder_spend=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Fodder spend is now tracked \u2014 the Fodder tile is back on Home.'); render(); showSaveToast('Updated'); };
+    const manageFodderSpendNoEl=document.getElementById('manageFodderSpendNo');
+    if(manageFodderSpendNoEl) manageFodderSpendNoEl.onchange=async()=>{ farmSettings.manage_fodder_spend=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Fodder spend is no longer tracked \u2014 the Fodder tile is hidden on Home. Fodder types can still be managed here in Settings.'); render(); showSaveToast('Updated'); };
     const manageFodderSpendHelpBtn=document.getElementById('manageFodderSpendHelp');
     if(manageFodderSpendHelpBtn) manageFodderSpendHelpBtn.onclick=()=>{ showInfoModal('If you don\u2019t want to track fodder purchases/usage or costs, turn this off \u2014 the Fodder tile disappears from Home. You can still manage your list of fodder types here in Settings either way.'); };
     const useAiYesEl=document.getElementById('useAiYes');
