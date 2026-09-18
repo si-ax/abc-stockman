@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17j';
+const APP_BUILD_VERSION = '2026-09-17k';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-17j';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17k',
+    date: '17 Sep 2026',
+    bullets: [
+      "Confirmed fix for photo reading: the model name was off by a version number (3.6 vs the real 3.8) \u2014 checked directly against your account's actual available models this time, not documentation."
+    ]
+  },
   {
     version: '2026-09-17j',
     date: '17 Sep 2026',
@@ -1236,7 +1243,7 @@ function friendlyAiError(err){
 // see discoverGroqVisionModel. GROQ_VISION_MODELS is kept only as a
 // last-resort fallback if that discovery call itself fails outright
 // (e.g. no signal to even ask the question).
-const GROQ_VISION_MODELS=['qwen/qwen3.6-27b'];
+const GROQ_VISION_MODELS=['qwen/qwen3.8-27b'];
 const GROQ_TEXT_MODELS=['openai/gpt-oss-20b', 'openai/gpt-oss-120b'];
 const GROQ_TIMEOUT_MS=12000; // Groq's whole point is speed — no reason to wait as long as Gemini needed
 // Cached per browser session once found, so every photo scan doesn't
@@ -1251,7 +1258,7 @@ async function discoverGroqVisionModel(apiKey){
     const ids=(json.data||[]).map(m=>m.id);
     // Try known-good names first, but only if they're actually present in
     // THIS account's live list — that's the whole point versus before.
-    for(const known of ['qwen/qwen3.6-27b', 'meta-llama/llama-4-scout-17b-16e-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct']){
+    for(const known of ['qwen/qwen3.8-27b', 'meta-llama/llama-4-scout-17b-16e-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct']){
       if(ids.includes(known)) return known;
     }
     // Otherwise, whatever's live that LOOKS vision-capable by name — not
