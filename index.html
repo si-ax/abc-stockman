@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17i';
+const APP_BUILD_VERSION = '2026-09-17j';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-17i';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17j',
+    date: '17 Sep 2026',
+    bullets: [
+      "Photo reading (passport/tag/injury) now checks with Groq directly for whichever AI model your own key actually has access to, instead of a name picked from documentation \u2014 that name had already stopped working twice in a row, so guessing a third one wasn't going to be reliable."
+    ]
+  },
   {
     version: '2026-09-17i',
     date: '17 Sep 2026',
@@ -1219,17 +1226,40 @@ function friendlyAiError(err){
 // Each list tries a second candidate on a 404 (model retired) as well as
 // the usual 429/5xx, same defence the old Gemini implementation had.
 // Worth rechecking the deprecations page occasionally as models move on.
-// qwen/qwen3.6-27b is currently the only Groq model confirmed to actually
-// support image input (openai/gpt-oss-120b, tried as a "fallback" here
-// briefly, turned out to be text-only and hard-failed every vision call
-// with a 400 — removed). It's also a Groq "preview" model, meaning it
-// could itself be pulled with little notice the same way llama-4-scout
-// was; worth rechecking console.groq.com/docs/vision if this starts
-// throwing 404s again, since there may not be a second real option to
-// fall back to at that point.
+//
+// Vision specifically has now failed with a "model does not exist" 404
+// twice in a row on two different hardcoded names — both ones that
+// looked current from outside documentation, neither of which actually
+// worked against this real account. Guessing a third name blind isn't a
+// real fix, so vision instead asks Groq's own /models endpoint what's
+// ACTUALLY available to this specific key, live, and picks from that —
+// see discoverGroqVisionModel. GROQ_VISION_MODELS is kept only as a
+// last-resort fallback if that discovery call itself fails outright
+// (e.g. no signal to even ask the question).
 const GROQ_VISION_MODELS=['qwen/qwen3.6-27b'];
 const GROQ_TEXT_MODELS=['openai/gpt-oss-20b', 'openai/gpt-oss-120b'];
 const GROQ_TIMEOUT_MS=12000; // Groq's whole point is speed — no reason to wait as long as Gemini needed
+// Cached per browser session once found, so every photo scan doesn't
+// re-query /models — only re-discovered if the cached one itself starts
+// 404ing (see callGroq), which is the actual signal something changed.
+let groqVisionModelCache=null;
+async function discoverGroqVisionModel(apiKey){
+  try{
+    const resp=await fetch('https://api.groq.com/openai/v1/models', {headers:{'Authorization':'Bearer '+apiKey}});
+    if(!resp.ok) return null;
+    const json=await resp.json();
+    const ids=(json.data||[]).map(m=>m.id);
+    // Try known-good names first, but only if they're actually present in
+    // THIS account's live list — that's the whole point versus before.
+    for(const known of ['qwen/qwen3.6-27b', 'meta-llama/llama-4-scout-17b-16e-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct']){
+      if(ids.includes(known)) return known;
+    }
+    // Otherwise, whatever's live that LOOKS vision-capable by name — not
+    // perfect, but far better odds than a name guessed from outside docs
+    // that have no visibility into this account's actual access.
+    return ids.find(id=>/vision|scout|maverick|qwen3\.\d|llava|vl-/i.test(id)) || null;
+  }catch(e){ return null; }
+}
 // Shared low-level caller — every AI feature in the app goes through
 // this now, instead of each duplicating its own request/retry logic.
 // imagePart is optional: {mediaType, base64} for a vision call, omit for
@@ -1238,7 +1268,15 @@ async function callGroq(promptText, imagePart, opts){
   opts=opts||{};
   const apiKey=userSettings.groq_api_key;
   if(!apiKey) throw new Error('No Groq API key set');
-  const models=imagePart?GROQ_VISION_MODELS:GROQ_TEXT_MODELS;
+  let models;
+  if(imagePart){
+    if(!groqVisionModelCache) groqVisionModelCache=await discoverGroqVisionModel(apiKey);
+    models = groqVisionModelCache
+      ? [groqVisionModelCache, ...GROQ_VISION_MODELS.filter(m=>m!==groqVisionModelCache)]
+      : GROQ_VISION_MODELS;
+  } else {
+    models=GROQ_TEXT_MODELS;
+  }
   const content=imagePart
     ? [{type:'text', text:promptText}, {type:'image_url', image_url:{url:'data:'+imagePart.mediaType+';base64,'+imagePart.base64}}]
     : promptText;
@@ -1277,7 +1315,12 @@ async function callGroq(promptText, imagePart, opts){
     const errBody=await resp.text().catch(()=>'');
     lastErr=new Error('Groq ('+model+') request failed ('+resp.status+'): '+errBody.slice(0,150).trim());
     // 404 = this model ID's been retired since this build shipped, worth
-    // trying the next candidate; 429/5xx = same reasoning as before.
+    // trying the next candidate; 429/5xx = same reasoning as before. For
+    // vision specifically, a 404 on the cached discovered model means
+    // discovery itself found something that's since stopped working —
+    // clear it so the next call re-asks /models rather than repeating
+    // the same dead answer indefinitely.
+    if(resp.status===404 && imagePart && model===groqVisionModelCache) groqVisionModelCache=null;
     const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
     if(!worthRetrying) throw lastErr;
   }
