@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17l';
+const APP_BUILD_VERSION = '2026-09-17n';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,23 @@ const APP_BUILD_VERSION = '2026-09-17l';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-17n',
+    date: '17 Sep 2026',
+    bullets: [
+      "Reports: Ask (when AI's turned on) is now a bordered button in the footer, centred between Help and Home, instead of a tile in the grid.",
+      "Reports > Done today: expanded sub-records now sit on a grey panel instead of blending into the white page \u2014 much easier to tell entries apart."
+    ]
+  },
+  {
+    version: '2026-09-17m',
+    date: '17 Sep 2026',
+    bullets: [
+      "EIDs now consistently use the UK172091 202786 letter format everywhere \u2014 manual entry, tag scanning, and passport scanning all agree, matching what's actually printed on a tag or passport instead of the internal numeric code.",
+      "Fixed the real cause of a re-scanned animal not being found: a passport scan that didn't clearly read the country code used to silently save the EID without one \u2014 it now defaults to UK when that happens, so it matches on a later scan instead of drifting.",
+      "The EID field can now actually type letters on a phone keyboard \u2014 it was locked to numbers only, which would have made typing \u201cUK\u201d by hand impossible."
+    ]
+  },
   {
     version: '2026-09-17l',
     date: '17 Sep 2026',
@@ -1067,11 +1084,6 @@ function formatCph(raw){
   if(digits.length>5) out+='/'+digits.slice(5,9);
   return out;
 }
-// UK bovine EID structure (per DEFRA/GOV.WALES spec): 826 (3-digit UK
-// country code) + 0 (series number) + 6-digit herd number + 5-digit
-// individual animal number = 15 digits total, e.g. "826 0 123456 70000".
-// Same idea as formatCph — strip non-digits and re-insert the grouping
-// spaces as the farmer types or a scan result comes in.
 const BCMS_URL='https://secure.services.defra.gov.uk/wps/portal/ctso';
 // Wraps just the word "BCMS" in a real link to the DEFRA CTS portal,
 // opening in a new tab. Used inline within plain text/labels/buttons.
@@ -1089,12 +1101,25 @@ function bcmsLink(text, plain){
   const style = plain ? 'color:inherit;text-decoration:underline;text-underline-offset:3px;' : 'color:#2f6fed;text-decoration:underline;text-underline-offset:3px;';
   return `<a href="${BCMS_URL}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="${style}">${text}</a>`;
 }
+// Canonical EID shape across the whole app is now UK172091 202786 —
+// country code letters (as printed on every tag and passport) run
+// straight into the first 6 digits, a space, then the last 6. This used
+// to format toward the numeric 826/899 country code instead (what's
+// actually on the electronic chip) on the theory that it's the "real"
+// value — reversed deliberately: farmers compare what's on screen
+// against a physical tag or passport, where the letters are what's
+// printed, and a format only insiders recognise just invited transcribing
+// mistakes. See extractEidFromOcrText and applyPassportScanResult's
+// normalizeScannedEid for the two read paths that need to agree with
+// this, since a mismatch here is exactly how a re-scanned animal stops
+// matching itself.
 function formatEid(raw){
-  const digits=(raw||'').replace(/\D/g,'').slice(0,15);
-  let out=digits.slice(0,3);
-  if(digits.length>3) out+=' '+digits.slice(3,4);
-  if(digits.length>4) out+=' '+digits.slice(4,10);
-  if(digits.length>10) out+=' '+digits.slice(10,15);
+  const trimmed=(raw||'').trim();
+  const prefixMatch=trimmed.match(/^([A-Za-z]{1,2})/);
+  const prefix=prefixMatch?prefixMatch[1].toUpperCase():'';
+  const digits=trimmed.slice(prefix.length).replace(/\D/g,'').slice(0,12);
+  let out=prefix+digits.slice(0,6);
+  if(digits.length>6) out+=' '+digits.slice(6,12);
   return out;
 }
 // Wraps a <input type="date"> with a small "jump to month/year" button, so
@@ -4008,11 +4033,11 @@ function renderReports(){
         ${tile('rep-sellno','gavel','Animals to keep',{color:'var(--red)'})}
         ${tile('rep-roi','roi','ROI<br><span style="font-size:11px;">(cost vs current)</span>',{color:'var(--grey)'})}
         ${tile('rep-realized','roi','Realised profit/loss<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
-        ${farmSettings.use_ai===true?tile('rep-ask','questionMark','Ask',{color:'var(--primary)'}):''}
       </div>
     </div>
     ${footerBar([
       {id:'reports-help', icon:'help', label:'Help'},
+      ...(farmSettings.use_ai===true?[{id:'rep-ask', icon:'questionMark', label:'Ask', bordered:true}]:[]),
       {id:'reports-home', icon:'home', label:'Home', home:true},
     ])}`;
 }
@@ -4113,7 +4138,7 @@ function renderReportDetail(){
               <span style="display:flex;align-items:center;gap:8px;"><span style="font-weight:800;font-size:19px;color:${r.color};">${r.count}</span>${r.count>0?`<span style="width:20px;height:20px;flex-shrink:0;color:var(--grey);">${icon(open?'triangleDown':'triangleRight')}</span>`:''}</span>
             </div>
           </button>
-          ${open?`<div style="margin:2px 0 8px;">
+          ${open?`<div style="background:#f3f3f3;border-radius:8px;padding:10px 12px;margin:2px 0 8px;">
             ${r.key==='today-weigh'?d.weighToday.map(w=>{
               const an=animals.find(a=>a.id===w.animal_id);
               const parts=[]; if(w.weight_kg!=null) parts.push(w.weight_kg+'kg'); if(w.bcs!=null) parts.push('BCS '+w.bcs);
@@ -6509,18 +6534,24 @@ function preprocessImageForOcr(file){
 // isn't guaranteed to decompose into a clean herd+animal-number EID this
 // way. So a scanned "EID" here is a best-effort reconstruction from the
 // tag face, not a guaranteed read of the actual electronic chip contents.
+// Produces the same UK172091 202786 shape as formatEid — see the note
+// there. Used to convert a detected UK/GB/XI letter prefix to the
+// numeric 826/899 chip code; now the letters are what's kept, since
+// they're the canonical format everywhere else in the app.
 function extractEidFromOcrText(rawText){
   if(!rawText) return null;
   const upper=rawText.toUpperCase();
-  let countryPrefix=null;
-  if(/\bXI\b/.test(upper)) countryPrefix='899';
-  else if(/\b(UK|GB)\b/.test(upper)) countryPrefix='826';
+  let countryPrefix='';
+  if(/\bXI\b/.test(upper)) countryPrefix='XI';
+  else if(/\b(UK|GB)\b/.test(upper)) countryPrefix='UK';
   const words=rawText.split(/\s+/).filter(Boolean);
   const groups=words.map(w=>w.replace(/\D/g,'')).filter(g=>g.length>=4);
   if(!groups.length) return null;
-  const combined=groups.join('');
-  if(combined.length<6) return null; // too little to be confident this is a real tag read
-  return (countryPrefix ? countryPrefix+' ' : '') + groups.join(' ');
+  const digits=groups.join('').slice(0,12);
+  if(digits.length<6) return null; // too little to be confident this is a real tag read
+  const first6=digits.slice(0,6);
+  const rest=digits.slice(6,12);
+  return countryPrefix + first6 + (rest ? ' '+rest : '');
 }
 // Runs the full read pipeline on one captured photo using the on-device
 // offline reader: preprocess -> OCR -> extract digits. Updates statusEl (if
@@ -6749,18 +6780,30 @@ function triggerScanCameraCapture(onPhotoTaken){
 // which silently breaks matching between them (mother/father lookups,
 // duplicate detection) since EID comparison elsewhere only strips
 // whitespace, not letters.
-function convertEidCountryPrefix(raw){
+// Normalizes a passport-scanned EID into the same UK172091 202786 shape
+// as formatEid/extractEidFromOcrText. Passports print the 2-letter
+// country code, but the model reading the photo doesn't always
+// transcribe it — that's exactly what caused a passport-scanned EID to
+// stop matching the same animal on a later tag scan: the scan silently
+// produced a bare, prefix-less EID instead of erroring, so there was
+// nothing to notice at the time. When the prefix is missing but the
+// digit count matches a normal UK EID (12 digits), default to UK rather
+// than leaving it prefix-less — overwhelmingly the realistic case for a
+// UK pilot farm, and far better than silently storing an EID no other
+// scan path will ever produce a match for again.
+function normalizeScannedEid(raw){
   if(!raw) return raw;
   const trimmed=String(raw).trim();
   const m=trimmed.match(/^(UK|GB|XI)\b\s*(.*)$/i);
-  if(!m) return trimmed; // no recognised letter prefix — leave whatever's there alone
-  const prefix = m[1].toUpperCase()==='XI' ? '899' : '826';
-  return (prefix+' '+m[2]).trim();
+  if(m) return formatEid(m[1].toUpperCase()+m[2]);
+  const digits=trimmed.replace(/\D/g,'');
+  if(digits.length===12) return formatEid('UK'+digits);
+  return trimmed; // not a shape recognised — leave it rather than guess wrong
 }
 function applyPassportScanResult(result){
   const filled=[];
   if(result.eid){
-    newAnimalEid=convertEidCountryPrefix(String(result.eid).trim());
+    newAnimalEid=normalizeScannedEid(String(result.eid).trim());
     const btnText=document.getElementById('enterEidBtnText');
     if(btnText) btnText.textContent='EID: '+newAnimalEid;
     filled.push('EID');
@@ -6806,7 +6849,7 @@ function applyPassportScanResult(result){
   // doesn't apply to a value read straight off an official document.
   const norm=s=>s.replace(/\s+/g,'').toLowerCase();
   if(result.dam_eid){
-    const eid=convertEidCountryPrefix(String(result.dam_eid).trim());
+    const eid=normalizeScannedEid(String(result.dam_eid).trim());
     const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='F');
     if(found){ newAnimalMotherId=found.id; newAnimalMotherExternalEid=null; }
     else { newAnimalMotherId=null; newAnimalMotherExternalEid=eid; }
@@ -6815,7 +6858,7 @@ function applyPassportScanResult(result){
     filled.push('Mother');
   }
   if(result.sire_eid){
-    const eid=convertEidCountryPrefix(String(result.sire_eid).trim());
+    const eid=normalizeScannedEid(String(result.sire_eid).trim());
     const found=animals.find(x=>x.eid && norm(x.eid)===norm(eid) && x.sex==='M');
     if(found){ newAnimalFatherId=found.id; newAnimalFatherExternalEid=null; }
     else { newAnimalFatherId=null; newAnimalFatherExternalEid=eid; }
@@ -7269,7 +7312,7 @@ function renderModal(){
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;">
           <label style="text-transform:none;font-size:15px;font-weight:700;color:var(--ink);flex-shrink:0;">Enter EID</label>
           <div style="position:relative;flex:1;">
-            <input type="text" inputmode="numeric" id="eidModalInput" value="${(modal.current||'').replace(/"/g,'&quot;')}" style="padding-right:36px;font-size:15px;">
+            <input type="text" id="eidModalInput" value="${(modal.current||'').replace(/"/g,'&quot;')}" style="padding-right:36px;font-size:15px;" autocapitalize="characters" autocorrect="off" spellcheck="false">
             <button id="eidModalClear" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);width:24px;height:24px;background:var(--red);border:none;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;padding:5px;">${icon('close')}</button>
           </div>
         </div>
@@ -7300,7 +7343,7 @@ function renderModal(){
         </div>
         <div class="sub" style="font-size:15px;">${modal.context==='new'?'Enter the EID':'Scan or manually enter the EID'}</div>
         <div style="position:relative;">
-          <input type="text" inputmode="numeric" id="eidModalInput" value="${(modal.current||'').replace(/"/g,'&quot;')}" placeholder="e.g. 826 0 123456 70000" style="padding-right:36px;font-size:17px;">
+          <input type="text" id="eidModalInput" value="${(modal.current||'').replace(/"/g,'&quot;')}" placeholder="e.g. UK172091 202786" style="padding-right:36px;font-size:17px;" autocapitalize="characters" autocorrect="off" spellcheck="false">
           <button id="eidModalClear" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);width:24px;height:24px;background:var(--red);border:none;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;padding:5px;">${icon('close')}</button>
         </div>
         <div class="field-error" id="err-eidmodal" style="margin-top:4px;font-size:14px;"></div>
