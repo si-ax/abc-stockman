@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-17o';
+const APP_BUILD_VERSION = '2026-09-19a';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-17o';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-19a',
+    date: '19 Sep 2026',
+    bullets: [
+      "BCMS birth-registration and death-report warnings now only appear for cattle \\u2014 sheep don't have the same per-animal deadlines, so they no longer get flagged in Attention for these."
+    ]
+  },
   {
     version: '2026-09-17o',
     date: '17 Sep 2026',
