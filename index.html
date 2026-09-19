@@ -2798,9 +2798,20 @@ function animalMoveRisk(animalId){
 // patterns (an unknown D.O.B. or an already-overdue-looking one on a
 // home-bred calf is exactly the case this warning most needs to catch,
 // not a case to quietly wave through).
+// Cattle get an individual BCMS/CTS birth registration (27 days) and death
+// report (7 days) — sheep have no equivalent per-animal deadline for either
+// (they're only tagged before moving, and fallen stock/flock-register rules
+// apply to deaths instead), so these two checks only fire for cattle.
+// Movement reporting (3 days, in moveReportStatus below) applies to both
+// species equally, so that one is deliberately left species-agnostic.
+function animalSpecies(a){
+  const breed=breeds.find(b=>b.id===a.breed_id);
+  return (breed && breed.species) || 'cattle';
+}
 function birthReportStatus(a){
   if(a.bcms_birth_reported || !a.birth_date) return null;
   if(a.purchase_price!=null) return null; // bought in (any price, including £0 for a free transfer) — previous keeper's obligation, not ours
+  if(animalSpecies(a)!=='cattle') return null; // sheep have no individual birth-registration deadline
   const daysLeft = 27 - daysSince(a.birth_date);
   return { daysLeft, overdue: daysLeft<=0 };
 }
@@ -2811,6 +2822,7 @@ function moveReportStatus(rec){
 }
 function deathReportStatus(a){
   if(a.status!=='dead' || a.bcms_death_reported) return null;
+  if(animalSpecies(a)!=='cattle') return null; // sheep deaths go through fallen stock / the flock register, not a BCMS-style report
   const evs=events[a.id]||[];
   const deathEvent=evs.slice().reverse().find(e=>e.to_status==='dead');
   const deathDate = deathEvent ? deathEvent.created_at : a.updated_at;
