@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-19h';
+const APP_BUILD_VERSION = '2026-09-19k';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,27 @@ const APP_BUILD_VERSION = '2026-09-19h';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-19k',
+    date: '19 Sep 2026',
+    bullets: [
+      "Photos taken with no signal now finish uploading properly once signal returns, same as everything else \\u2014 previously they stayed stuck as a large local-only copy forever."
+    ]
+  },
+  {
+    version: '2026-09-19j',
+    date: '19 Sep 2026',
+    bullets: [
+      "Attention now flags anything that's failed to sync to the shared farm database 10+ times, with the option to remove it from this device and re-add it."
+    ]
+  },
+  {
+    version: '2026-09-19i',
+    date: '19 Sep 2026',
+    bullets: [
+      "Changes made with no signal now sync automatically once signal returns, instead of needing to be re-saved \\u2014 a small number on the signal icon shows how many are still waiting."
+    ]
+  },
   {
     version: '2026-09-19h',
     date: '19 Sep 2026',
@@ -816,15 +837,186 @@ async function adminSwitchFarm(farmId){
   render();
 }
 
+// ---------- offline sync queue (Phase 4) ----------
+// Every syncXToSupabase function below goes through queuedSync() instead
+// of calling Supabase directly. On success, nothing changes from before.
+// On failure — no signal, a dropped connection, a timeout — the change
+// is kept here and retried automatically once signal returns, rather
+// than just being logged and left to drift out of sync until someone
+// happens to edit that same record again. Keyed by table+id, so editing
+// the same record twice while offline just replaces the pending entry
+// with its latest state instead of queuing two retries.
+//
+// This deliberately doesn't try to tell a real connectivity failure
+// apart from a genuine server-side rejection (a bad value, an RLS
+// mismatch) — both look the same from here (an error back from
+// Supabase), and by far the common case for this app is the former. A
+// record that fails for a real data reason will keep retrying quietly
+// rather than erroring loudly, which just means it stays in the pending
+// count until someone investigates — not ideal, but a lot better than
+// the alternative of losing it. Worth a smarter clash/error queue if
+// this ever turns up in practice, not before.
+let syncQueue={}; // 'table:id' -> {table, method, payload, matchId, label, queuedAt}
+async function persistSyncQueue(){
+  await safeSet('local:syncqueue', JSON.stringify(syncQueue));
+}
+async function attemptSupabaseWrite({table, method, payload, matchId}){
+  let error;
+  if(method==='upsert') ({error} = await sb.from(table).upsert(payload));
+  else if(method==='insert') ({error} = await sb.from(table).insert(payload));
+  else if(method==='update') ({error} = await sb.from(table).update(payload).eq('id', matchId));
+  else if(method==='delete') ({error} = await sb.from(table).delete().eq('id', matchId));
+  return error||null;
+}
+async function queuedSync(key, entry){
+  const error = await attemptSupabaseWrite(entry);
+  if(!error){
+    if(syncQueue[key]){ delete syncQueue[key]; await persistSyncQueue(); render(); }
+    return;
+  }
+  // Attempts carry over across edits to the same record — someone tweaking
+  // an unrelated field on a record that's already failing shouldn't reset
+  // its count back to zero and let it dodge the stuck-item check forever.
+  const prev=syncQueue[key];
+  syncQueue[key] = {...entry, queuedAt:(prev&&prev.queuedAt)||new Date().toISOString(), lastAttemptAt:new Date().toISOString(), attempts:((prev&&prev.attempts)||0)+1};
+  await persistSyncQueue();
+  logMsg('<span style="color:var(--red);">Couldn\u2019t sync '+escapeHtml(entry.label)+' to the shared farm database \u2014 '+escapeHtml(error.message)+'. It\u2019s saved on this device and will sync automatically once signal returns.</span>');
+  render(); // updates the pending-sync badge
+}
+function pendingSyncCount(){ return Object.keys(syncQueue).length; }
+// A record still failing after this many attempts is very unlikely to be
+// a signal problem any more (an ordinary offline gap gets retried far
+// more than 10 times before signal returns) — see stuckSyncEntries().
+const SYNC_STUCK_THRESHOLD=10;
+function stuckSyncEntries(){
+  return Object.entries(syncQueue).filter(([k,e])=>(e.attempts||0)>=SYNC_STUCK_THRESHOLD).map(([key,e])=>({key, ...e}));
+}
+// Retries everything queued. Called when the 'online' event fires, once
+// at boot (in case the app was closed mid-queue), and on a light
+// interval while anything's still pending — navigator.onLine says
+// there's a network interface up, not that it's actually good enough to
+// complete a request, so a timer catches the "technically online but
+// too weak to sync" case the event alone would miss.
+//
+// Ordering: retried in the order they were first queued (Object.keys
+// preserves insertion order for string keys), one at a time rather than
+// in parallel — deliberately, since a few of these tables have a real
+// foreign key back to animals (an injury/weight/medicine/event needs its
+// animal to exist first). Because you can't add an injury in the UI to
+// an animal that doesn't locally exist yet, that animal's own sync was
+// always attempted — and so queued, if it failed — before the injury's
+// was, so the queue's natural order already retries parents before
+// children within the same pass. This isn't an explicit dependency
+// graph, just an emergent property of the UI's own ordering plus
+// sequential (not concurrent) retries here — worth knowing if a new
+// syncXToSupabase is ever added for a table with its own FK.
+let syncQueueFlushing=false;
+async function flushSyncQueue(){
+  if(syncQueueFlushing || !isOnline) return;
+  const keys=Object.keys(syncQueue);
+  if(!keys.length) return;
+  syncQueueFlushing=true;
+  let succeeded=0;
+  for(const key of keys){
+    const entry=syncQueue[key];
+    if(!entry) continue; // discarded mid-loop (stuck-item removal) — skip rather than resurrect it
+    const error=await attemptSupabaseWrite(entry);
+    if(!error){ delete syncQueue[key]; succeeded++; }
+    else { entry.attempts=(entry.attempts||0)+1; entry.lastAttemptAt=new Date().toISOString(); }
+  }
+  await persistSyncQueue();
+  syncQueueFlushing=false;
+  if(succeeded){ logMsg(succeeded+' change'+(succeeded===1?'':'s')+' synced to the shared farm database.'); render(); }
+}
+// A photo taken with no signal falls back to storing the raw capture
+// directly as photo_data (see wirePhotoCaptureModal) — that keeps it
+// viewable straight away, but unlike every other offline change, that
+// fallback was never retried: the photo just stayed a large embedded
+// image forever instead of becoming the small Storage URL everything
+// else uses. This finds any record still in that state (detectable
+// purely by photo_data being a data: URL rather than an https:// one —
+// true whether the record was brand new or already existed when the
+// photo was retaken) and, once signal's back, uploads it properly and
+// patches just that record's photo_data through its normal sync
+// function. Runs alongside flushSyncQueue on the same triggers.
+const PHOTO_TABLES=[
+  {list:()=>animals, syncFn:syncAnimalToSupabase},
+  {list:()=>injuryRecords, syncFn:syncInjuryToSupabase},
+  {list:()=>damageRecords, syncFn:syncDamageToSupabase},
+  {list:()=>medicineRecords, syncFn:syncMedicineToSupabase},
+  {list:()=>medicineTypes, syncFn:syncMedicineTypeToSupabase},
+];
+function recordsWithLocalOnlyPhotos(){
+  const isLocalPhoto=v=>typeof v==='string' && v.indexOf('data:image/')===0;
+  const found=[];
+  PHOTO_TABLES.forEach(({list, syncFn})=>{
+    list().forEach(record=>{ if(isLocalPhoto(record.photo_data)) found.push({record, syncFn}); });
+  });
+  return found;
+}
+let photoPromotionRunning=false;
+async function promoteLocalPhotos(){
+  if(photoPromotionRunning || !isOnline || !authFarmId) return;
+  const pending=recordsWithLocalOnlyPhotos();
+  if(!pending.length) return;
+  photoPromotionRunning=true;
+  let promoted=0;
+  for(const {record, syncFn} of pending){
+    try{
+      const url=await uploadPhotoToStorage(record.photo_data, 'promoted');
+      await cachePhotoOffline(url, record.photo_data); // offline viewing keeps working, now keyed to the new URL
+      record.photo_data=url;
+      await syncFn(record); // pushes the now-small photo_data to Supabase (queues itself on failure, same as any other edit)
+      promoted++;
+    }catch(e){ /* still offline, or the upload itself failed — leave as-is, next pass will retry */ }
+  }
+  if(promoted){ await persistAll(); render(); }
+  photoPromotionRunning=false;
+}
+// Which in-memory array a table's records live in, for the tables it's
+// safe to let a farmer discard themselves from the Attention list when
+// stuck — everything with its own record-per-row array. animals,
+// farm_settings, and user_settings are deliberately left out: an animal
+// is too consequential to delete from a list-tap, and the settings
+// tables are singletons with nothing to "re-enter" in the same sense —
+// those just show up in Attention as a flag to investigate rather than
+// discard. animal_events lives nested under events[animalId] rather
+// than a flat array, so it's handled separately below.
+const SYNC_TABLE_TO_LOCAL_ARRAY={
+  damage_records:()=>damageRecords, injury_records:()=>injuryRecords, move_records:()=>moveRecords,
+  medicine_records:()=>medicineRecords, feed_records:()=>feedRecords, feed_usage_records:()=>feedUsageRecords,
+  breeds:()=>breeds, breed_price_history:()=>breedPriceHistory, feed_types:()=>feedTypes,
+  medicine_types:()=>medicineTypes, farmers_vets:()=>farmersVets, breeding_records:()=>breedingRecords,
+};
+async function discardStuckSyncEntry(key){
+  const idx=key.indexOf(':');
+  const table=key.slice(0,idx), recordId=key.slice(idx+1);
+  const arrayGetter=SYNC_TABLE_TO_LOCAL_ARRAY[table];
+  if(arrayGetter){
+    const arr=arrayGetter();
+    const i=arr.findIndex(x=>x.id===recordId);
+    if(i>-1) arr.splice(i,1);
+  } else if(table==='animal_events'){
+    for(const animalId in events){
+      const i=events[animalId].findIndex(e=>e.id===recordId);
+      if(i>-1){ events[animalId].splice(i,1); break; }
+    }
+  }
+  delete syncQueue[key];
+  await persistSyncQueue();
+  await persistAll();
+  logMsg('Removed from this device \u2014 you\u2019ll need to add it again.');
+  render();
+}
+setInterval(()=>{ if(pendingSyncCount()) flushSyncQueue(); if(recordsWithLocalOnlyPhotos().length) promoteLocalPhotos(); }, 45000);
+
 // Pushes one animal's current full state up to Supabase — called after
-// any local edit, wherever authFarmId is set. There's no offline queue
-// yet (that's Phase 4), so a failed sync here doesn't block or roll back
-// the local change (the person's already seen it save), it just gets
-// logged so it's visible that this device and the shared database have
-// drifted apart until the next successful sync.
+// any local edit, wherever authFarmId is set. A failed sync here doesn't
+// block or roll back the local change (the person's already seen it
+// save) — see the offline sync queue above for what happens instead.
 async function syncAnimalToSupabase(a){
   if(!authFarmId) return;
-  const { error } = await sb.from('animals').update({
+  await queuedSync('animals:'+a.id, {table:'animals', method:'update', matchId:a.id, label:animalDisplayName(a), payload:{
     tag_number:a.tag_number, eid:a.eid, breed_id:a.breed_id, sex:a.sex, birth_date:a.birth_date, status:a.status,
     purchase_price:a.purchase_price, birth_weight_kg:a.birth_weight_kg, weaned_weight_kg:a.weaned_weight_kg,
     mother_id:a.mother_id, mother_external_eid:a.mother_external_eid, father_id:a.father_id, father_external_eid:a.father_external_eid,
@@ -834,129 +1026,120 @@ async function syncAnimalToSupabase(a){
     bcms_death_reported:a.bcms_death_reported??null, bcms_death_reported_at:a.bcms_death_reported_at??null,
     offspring_status:a.offspring_status??null, offspring_due_date:a.offspring_due_date??null, offspring_until_date:a.offspring_until_date??null,
     is_cross:!!a.is_cross,
-  }).eq('id', a.id);
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync '+(animalDisplayName(a))+' to the shared farm database \u2014 '+escapeHtml(error.message)+'. This device\u2019s copy is up to date but other devices won\u2019t see this change yet.</span>'); }
+  }});
 }
 
 async function syncDamageToSupabase(d){
   if(!authFarmId) return;
-  const { error } = await sb.from('damage_records').upsert({
+  await queuedSync('damage_records:'+d.id, {table:'damage_records', method:'upsert', label:'this damage record', payload:{
     id:d.id, farm_id:authFarmId, photo_data:d.photo_data, gps:d.gps, location:d.location, summary:d.summary,
     details:d.details, urgency:d.urgency, fixed_at:d.fixed_at, not_going_to_fix:!!d.not_going_to_fix,
     created_at:d.created_at, farmer_id:d.farmer_id,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this damage record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 
 async function syncInjuryToSupabase(inj){
   if(!authFarmId) return;
-  const { error } = await sb.from('injury_records').upsert({
+  await queuedSync('injury_records:'+inj.id, {table:'injury_records', method:'upsert', label:'this injury record', payload:{
     id:inj.id, farm_id:authFarmId, animal_id:inj.animal_id, photo_data:inj.photo_data, body_part:inj.body_part,
     cause:inj.cause, severity:inj.severity, notes:inj.notes, checklist:inj.checklist, recorded_at:inj.recorded_at,
     resolved_at:inj.resolved_at, analysis_status:inj.analysis_status, ai_diagnosis:inj.ai_diagnosis,
     ai_treatment:inj.ai_treatment, ai_confidence:inj.ai_confidence, ai_vet_recommended:inj.ai_vet_recommended,
     analyzed_at:inj.analyzed_at, farmer_id:inj.farmer_id,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this injury record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 
 async function syncMoveToSupabase(rec){
   if(!authFarmId) return;
-  const { error } = await sb.from('move_records').upsert({
+  await queuedSync('move_records:'+rec.id, {table:'move_records', method:'upsert', label:'this move record', payload:{
     id:rec.id, farm_id:authFarmId, date:rec.date, location:rec.location, reason:rec.reason, animal_ids:rec.animal_ids,
     created_at:rec.created_at, direction:rec.direction, dest_cph:rec.dest_cph, bcms_reported:!!rec.bcms_reported,
     bcms_reported_at:rec.bcms_reported_at, farmer_id:rec.farmer_id,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this move record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 async function deleteMoveFromSupabase(id){
   if(!authFarmId) return;
-  const { error } = await sb.from('move_records').delete().eq('id', id);
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t remove this move from the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  await queuedSync('move_records:'+id, {table:'move_records', method:'delete', matchId:id, label:'removing this move'});
 }
 
 async function syncMedicineToSupabase(r){
   if(!authFarmId) return;
-  const { error } = await sb.from('medicine_records').upsert({
+  await queuedSync('medicine_records:'+r.id, {table:'medicine_records', method:'upsert', label:'this medicine record', payload:{
     id:r.id, farm_id:authFarmId, animal_id:r.animal_id, medicine_type_id:r.medicine_type_id, product_name:r.product_name,
     farmer_vet_id:r.farmer_vet_id, stock:r.stock, reason:r.reason, injury_id:r.injury_id, cost:r.cost, batch_no:r.batch_no,
     expiry_date:r.expiry_date, animal_weight_kg:r.animal_weight_kg, dosage_amount:r.dosage_amount, dosage_unit:r.dosage_unit,
     method_given:r.method_given, photo_data:r.photo_data, administered_at:r.administered_at, withdrawal_until:r.withdrawal_until,
     note:r.note, farmer_id:r.farmer_id,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this medicine record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 async function deleteMedicineFromSupabase(id){
   if(!authFarmId) return;
-  const { error } = await sb.from('medicine_records').delete().eq('id', id);
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t remove this medicine record from the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  await queuedSync('medicine_records:'+id, {table:'medicine_records', method:'delete', matchId:id, label:'removing this medicine record'});
 }
 
 async function syncFeedToSupabase(rec){
   if(!authFarmId) return;
-  const { error } = await sb.from('feed_records').upsert({
+  await queuedSync('feed_records:'+rec.id, {table:'feed_records', method:'upsert', label:'this fodder record', payload:{
     id:rec.id, farm_id:authFarmId, feed_type:rec.feed_type, total_cost:rec.total_cost, sacks:rec.sacks,
     start_date:rec.start_date, end_date:rec.end_date, supplier:rec.supplier, farmer_id:rec.farmer_id,
     status:rec.status, using_started_at:rec.using_started_at, exhausted_at:rec.exhausted_at, deleted_at:rec.deleted_at,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync this fodder record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 async function syncFeedUsageToSupabase(usageRec){
   if(!authFarmId) return;
-  const { error } = await sb.from('feed_usage_records').upsert({
+  await queuedSync('feed_usage_records:'+usageRec.id, {table:'feed_usage_records', method:'upsert', label:'fodder usage', payload:{
     id:usageRec.id, farm_id:authFarmId, feed_record_id:usageRec.feed_record_id,
     start_date:usageRec.start_date, end_date:usageRec.end_date, end_status:usageRec.end_status,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync fodder usage to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 
 // ---- Phase 3: reference/config lists + farm & user settings ----
 async function syncBreedToSupabase(b){
   if(!authFarmId) return;
-  const { error } = await sb.from('breeds').upsert({
+  await queuedSync('breeds:'+b.id, {table:'breeds', method:'upsert', label:'breed <b>'+escapeHtml(b.name)+'</b>', payload:{
     id:b.id, farm_id:authFarmId, species:b.species||'cattle', name:b.name,
     price_per_kg:b.price_per_kg??null, min_prime_months:b.min_prime_months??null, max_prime_months:b.max_prime_months??null,
     active:!!b.active,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync breed <b>'+escapeHtml(b.name)+'</b> to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 async function syncBreedPriceHistoryToSupabase(h){
   if(!authFarmId) return;
-  const { error } = await sb.from('breed_price_history').insert({ id:h.id, farm_id:authFarmId, breed_id:h.breed_id, price_per_kg:h.price_per_kg, changed_at:h.changed_at, changed_by_name:h.changed_by_name||null });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync breed price history to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  await queuedSync('breed_price_history:'+h.id, {table:'breed_price_history', method:'insert', label:'breed price history', payload:
+    { id:h.id, farm_id:authFarmId, breed_id:h.breed_id, price_per_kg:h.price_per_kg, changed_at:h.changed_at, changed_by_name:h.changed_by_name||null }
+  });
 }
 async function syncFeedTypeToSupabase(f){
   if(!authFarmId) return;
-  const { error } = await sb.from('feed_types').upsert({ id:f.id, farm_id:authFarmId, name:f.name, active:!!f.active });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync fodder type <b>'+escapeHtml(f.name)+'</b> to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  await queuedSync('feed_types:'+f.id, {table:'feed_types', method:'upsert', label:'fodder type <b>'+escapeHtml(f.name)+'</b>', payload:
+    { id:f.id, farm_id:authFarmId, name:f.name, active:!!f.active }
+  });
 }
 async function syncMedicineTypeToSupabase(m){
   if(!authFarmId) return;
-  const { error } = await sb.from('medicine_types').upsert({
+  await queuedSync('medicine_types:'+m.id, {table:'medicine_types', method:'upsert', label:'<b>'+escapeHtml(m.name)+'</b>', payload:{
     id:m.id, farm_id:authFarmId, name:m.name, type:m.type??null, batch_no:m.batch_no??null, expiry_date:m.expiry_date??null,
     qty_size:m.qty_size??null, qty_unit:m.qty_unit??null, cost:m.cost??null, supplier:m.supplier??null, supplier_address:m.supplier_address??null,
     withdrawal_days:m.withdrawal_days??null, dosage_per_kg:m.dosage_per_kg??null, photo_data:m.photo_data??null,
     active:!!m.active, locked:!!m.locked, disposed_at:m.disposed_at??null,
     disposal_qty_remaining:m.disposal_qty_remaining??null, disposal_qty_diff_reason:m.disposal_qty_diff_reason??null,
     disposal_date:m.disposal_date??null, disposal_method:m.disposal_method??null,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync <b>'+escapeHtml(m.name)+'</b> to the shared Medicine Cabinet \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 async function syncFarmerVetToSupabase(p){
   if(!authFarmId) return;
-  const { error } = await sb.from('farmers_vets').upsert({ id:p.id, farm_id:authFarmId, name:p.name, role:p.role??null, active:!!p.active });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync <b>'+escapeHtml(p.name)+'</b> to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  await queuedSync('farmers_vets:'+p.id, {table:'farmers_vets', method:'upsert', label:'<b>'+escapeHtml(p.name)+'</b>', payload:
+    { id:p.id, farm_id:authFarmId, name:p.name, role:p.role??null, active:!!p.active }
+  });
 }
 // Farm-wide — every member sees and can change these.
 async function syncFarmSettingsToSupabase(){
   if(!authFarmId) return;
-  const { error } = await sb.from('farm_settings').upsert({
+  await queuedSync('farm_settings:'+authFarmId, {table:'farm_settings', method:'upsert', label:'farm settings', payload:{
     farm_id:authFarmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null,
     typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false,
     manage_fodder_spend:farmSettings.manage_fodder_spend!==false,
     use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync farm settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 // Per-user — deliberately keyed by user_id alone, never farm_id. See the
 // note on the userSettings declaration for why this isn't shared. Use
@@ -965,30 +1148,27 @@ async function syncFarmSettingsToSupabase(){
 // preference now.
 async function syncUserSettingsToSupabase(){
   if(!authUser) return;
-  const { error } = await sb.from('user_settings').upsert({
+  await queuedSync('user_settings:'+authUser.id, {table:'user_settings', method:'upsert', label:'your settings', payload:{
     user_id:authUser.id,
     mute_weighing_notification:!!userSettings.mute_weighing_notification,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync your settings to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 // Insert-only — an event is a historical fact, never edited or deleted
 // once logged, so this only ever needs to add one new row.
 async function syncAnimalEventToSupabase(animalId, ev){
   if(!authFarmId) return;
-  const { error } = await sb.from('animal_events').insert({
+  await queuedSync('animal_events:'+ev.id, {table:'animal_events', method:'insert', label:'that event', payload:{
     id:ev.id, farm_id:authFarmId, animal_id:animalId, event_type:ev.event_type, from_status:ev.from_status,
     to_status:ev.to_status, reason:ev.reason||null, note:ev.note||null, created_at:ev.created_at, farmer_id:ev.farmer_id||null,
-  });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync that event to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
+  }});
 }
 // Also insert-only — birthing-ease/mothering-ability are logged once per
 // calving, never edited afterwards.
 async function syncBreedingRecordToSupabase(rec){
   if(!authFarmId) return;
-  const { error } = await sb.from('breeding_records').insert({
-    id:rec.id, farm_id:authFarmId, animal_id:rec.animal_id, field:rec.field, value:rec.value, date:rec.date, created_at:rec.created_at,
+  await queuedSync('breeding_records:'+rec.id, {table:'breeding_records', method:'insert', label:'that breeding record', payload:
+    { id:rec.id, farm_id:authFarmId, animal_id:rec.animal_id, field:rec.field, value:rec.value, date:rec.date, created_at:rec.created_at }
   });
-  if(error){ logMsg('<span style="color:var(--red);">Couldn\u2019t sync that breeding record to the shared farm database \u2014 '+escapeHtml(error.message)+'.</span>'); }
 }
 // Suggests a typical Prime age range for a breed the farmer's just typed
 // in — a real live web search isn't something a static, client-only app
@@ -2011,6 +2191,8 @@ async function loadAll(){
   const dfc=await safeGet('local:devicefarmcode'), dfn=await safeGet('local:devicefarmname'), cfi=await safeGet('local:currentfarmerid'), cfn=await safeGet('local:currentfarmername');
   deviceFarmCode = dfc||null; deviceFarmName = dfn||null;
   currentFarmerId = cfi||null; currentFarmerName = cfn||null;
+  const sq=await safeGet('local:syncqueue');
+  syncQueue = sq?JSON.parse(sq):{};
   if(!b||!a){ genSeed(); await persistAll(); logMsg('Seeded 100 animals into local storage on first launch.'); }
   else{
     breeds=JSON.parse(b); animals=JSON.parse(a); events=JSON.parse(e); weights= w?JSON.parse(w):[];
@@ -3332,8 +3514,10 @@ function updateSignalBadge(){
   if(!btn) return;
   btn.style.display='flex';
   btn.style.color = isOnline ? 'var(--green)' : 'var(--red)';
-  btn.innerHTML = isOnline ? icon('wifiOn') : icon('wifiOff');
-  btn.title = isOnline ? 'Signal OK' : 'No signal \u2014 changes are stored locally and synced when signal returns';
+  const pending=pendingSyncCount()+recordsWithLocalOnlyPhotos().length;
+  const badge = pending ? `<span style="position:absolute;top:-6px;right:-6px;background:var(--amber);color:#fff;font-size:10px;font-weight:800;line-height:1;min-width:15px;height:15px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 3px;">${pending>9?'9+':pending}</span>` : '';
+  btn.innerHTML = (isOnline ? icon('wifiOn') : icon('wifiOff')) + badge;
+  btn.title = (isOnline ? 'Signal OK' : 'No signal \u2014 changes are stored locally and synced when signal returns') + (pending ? ' \u2014 '+pending+' change'+(pending===1?'':'s')+' waiting to sync' : '');
 }
 
 const DEMO_FARM_CODE='DEV0001', DEMO_PASSCODE='00000000'; // no real Farm ID/Passcode data model exists yet — these are just pre-filled demo values, not validated against anything real
@@ -3674,15 +3858,40 @@ function systemSettingsIssues(){
   }
   return issues;
 }
+// Stuck sync entries (10+ failed attempts — see SYNC_STUCK_THRESHOLD),
+// surfaced the same way as any other outstanding issue rather than
+// sitting invisibly in the queue forever. discardable is false for the
+// handful of tables discardStuckSyncEntry() won't touch (animals, farm
+// settings, user settings) — those still show up here so they're not
+// missed, just without a delete action attached.
+function syncIssues(){
+  return stuckSyncEntries().map(e=>({
+    key:e.key, label:e.label, attempts:e.attempts,
+    discardable: !!SYNC_TABLE_TO_LOCAL_ARRAY[e.key.slice(0, e.key.indexOf(':'))] || e.key.startsWith('animal_events:'),
+  }));
+}
 function renderInsights(){
   const flags=herdFlags();
   const flagsOpen=expandedFlagKey;
   const bcmsGroups=outstandingBcmsGroups();
   const medCabGroups=medicineCabinetAttentionGroups();
   const sysIssues=systemSettingsIssues();
+  const syncIssuesList=syncIssues();
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Attention</span><span></span></div>
     <div class="body bigtext">
+      ${syncIssuesList.length?`
+      <label style="margin-top:4px;">Couldn't sync to shared database</label>
+      ${syncIssuesList.map(si=>`
+        <div class="row" style="margin:6px 0;background:#f3f3f3;border-radius:8px;padding:10px 12px;">
+          <span style="width:10px;height:10px;border-radius:50%;background:var(--red);flex-shrink:0;"></span>
+          <span style="flex:1;">
+            <span style="font-size:16px;font-weight:700;display:block;">${si.label}</span>
+            <span style="font-size:12px;color:var(--grey);">Failed ${si.attempts} sync attempts</span>
+          </span>
+          ${si.discardable?`<button data-discardsyncissue="${si.key}" style="background:none;border:none;color:var(--red);width:26px;height:26px;flex-shrink:0;padding:0;">${icon('trash')}</button>`:''}
+        </div>`).join('')}
+      `:''}
       ${sysIssues.length?`
       <label style="margin-top:4px;">System settings</label>
       ${sysIssues.map(si=>`
@@ -3762,7 +3971,7 @@ function renderInsights(){
           </div>`:''}
         </div>`;
       }).join('')}` : ''}
-      ${(!bcmsGroups.length && !medCabGroups.length && !flags.length && !sysIssues.length) ? '<div class="empty">Nothing needs attention right now.</div>' : ''}
+      ${(!bcmsGroups.length && !medCabGroups.length && !flags.length && !sysIssues.length && !syncIssuesList.length) ? '<div class="empty">Nothing needs attention right now.</div>' : ''}
     </div>
     ${footerBar([
       {id:'insights-help', icon:'help', label:'Help'},
@@ -4998,7 +5207,7 @@ function renderHome(){
     const iconStyle = filled ? `color:${filledTextColor};` : (opts.color?`color:${opts.color};`:'');
     return `<button class="${cls}" id="${id}" ${opts.disabled?'disabled':''} style="${btnStyle}"><div class="ticon" style="${iconStyle}">${opts.iconHtml||icon(iconName)}${opts.badge?`<span class="tbadge">${opts.badge}</span>`:''}</div><div class="tlabel" style="${filled?'color:'+filledTextColor+';':''}">${label}</div></button>`;
   };
-  const readyInsights=herdFlags().reduce((s,f)=>s+(f.muted?0:f.count),0) + outstandingBcmsItems().length + medicineCabinetAttentionGroups().reduce((s,g)=>s+g.count,0) + systemSettingsIssues().length;
+  const readyInsights=herdFlags().reduce((s,f)=>s+(f.muted?0:f.count),0) + outstandingBcmsItems().length + medicineCabinetAttentionGroups().reduce((s,g)=>s+g.count,0) + systemSettingsIssues().length + syncIssues().length;
   const standstill=standstillStatus();
   const unreportedMoves=unreportedMoveCount();
   // Fodder tile icon reflects current location: barn+snowflake (indoors/winter
@@ -8856,6 +9065,11 @@ function wireView(){
       settingsOpenSection = issue?issue.settingsSection:null;
       render();
     });
+    document.querySelectorAll('[data-discardsyncissue]').forEach(el=>el.onclick=(ev)=>{
+      ev.stopPropagation();
+      const key=el.dataset.discardsyncissue;
+      showConfirmModal('This couldn\u2019t be saved to the shared farm database after several attempts and may never succeed on its own. Remove it from this device? You\u2019ll need to add it again.', ()=>discardStuckSyncEntry(key), null, 'Remove', 'Cancel');
+    });
     document.querySelectorAll('[data-gotobcms]').forEach(el=>el.onclick=()=>{
       const [kind, id]=el.dataset.gotobcms.split(':');
       if(kind==='move'){
@@ -11261,6 +11475,8 @@ Rules:
   else if(!deviceFarmCode){ view='login'; render(); }
   else { goHomeRespectingBootMinimum(); }
   if(isOnline) runPendingAnalyses();
+  if(isOnline) flushSyncQueue();
+  if(isOnline) promoteLocalPhotos();
 
   await checkForInterruptedPassportScan();
 
@@ -11287,7 +11503,7 @@ Rules:
   noServerBtn.style.cursor='default';
   phoneFrame0.appendChild(noServerBtn);
   updateSignalBadge();
-  window.addEventListener('online', ()=>{ isOnline=true; render(); runPendingAnalyses(); });
+  window.addEventListener('online', ()=>{ isOnline=true; render(); runPendingAnalyses(); flushSyncQueue(); promoteLocalPhotos(); });
   window.addEventListener('offline', ()=>{ isOnline=false; render(); });
 
   // Swipe right anywhere on the phone screen to go back — mirrors the header back arrow.
