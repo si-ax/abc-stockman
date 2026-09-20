@@ -232,6 +232,7 @@
   .eidrow{display:flex;align-items:center;justify-content:space-between;padding:14px 2px;border-bottom:1px solid var(--line);}
   .eidbtn{display:flex;align-items:center;gap:8px;background:none;border:none;color:var(--primary);font-weight:800;font-size:15px;cursor:pointer;padding:0;}
   .eidbtn svg{width:20px;height:20px;}
+  .breedhistorybtn svg{width:18px;height:18px;flex-shrink:0;}
   .helpcircle{background:var(--red);border:none;color:#fff;width:26px;height:26px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;font-weight:800;font-family:inherit;line-height:1;}
   .helpcircle svg{width:15px;height:15px;}
   #eidModalScan svg,#eidModalSave svg{width:24px;height:24px;}
@@ -294,7 +295,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-19a';
+const APP_BUILD_VERSION = '2026-09-19c';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +303,20 @@ const APP_BUILD_VERSION = '2026-09-19a';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-19c',
+    date: '19 Sep 2026',
+    bullets: [
+      "Settings > Feed Types: Last cost/qty/date text is bigger, matching the Breeds fields fixed in the last update. Backup and Export confirmation messages are also bigger and easier to read."
+    ]
+  },
+  {
+    version: '2026-09-19b',
+    date: '19 Sep 2026',
+    bullets: [
+      "Settings > Breeds: bigger text throughout, tighter spacing between rows, and the \\u00a3/kg graph icon now says \\u201cView history\\u201d so it's clear what it does."
+    ]
+  },
   {
     version: '2026-09-19a',
     date: '19 Sep 2026',
@@ -6194,19 +6209,19 @@ function renderSettings(){
     </div>`;
   };
 
-  const miniField=(labelText, inputHtml)=>`<div><label style="font-size:9px;color:var(--grey);font-weight:800;text-transform:uppercase;display:block;margin-bottom:2px;">${labelText}</label>${inputHtml}</div>`;
+  const miniField=(labelText, inputHtml)=>`<div><label style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;display:block;margin-bottom:2px;">${labelText}</label>${inputHtml}</div>`;
 
   const breedsBody = sortedBreeds(breeds).map(b=>`
-    <div class="row" style="cursor:default;align-items:flex-start;">
+    <div class="row" style="cursor:default;align-items:flex-start;margin:3px 0;">
       <div style="flex:1;min-width:0;">
-        <div class="name">${b.name}</div><div class="id">${b.species}</div>
-        <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;">
-          ${miniField('Min Prime (mo)', `<input type="number" data-breed-minprime="${b.id}" value="${b.min_prime_months!=null?b.min_prime_months:18}" style="width:64px;padding:6px 8px;font-size:13px;">`)}
-          ${miniField('Max Prime (mo)', `<input type="number" data-breed-maxprime="${b.id}" value="${b.max_prime_months!=null?b.max_prime_months:30}" style="width:64px;padding:6px 8px;font-size:13px;">`)}
-          <div style="display:flex;align-items:flex-end;gap:4px;">
-            ${miniField('£/kg', `<input type="number" inputmode="decimal" data-breed-price="${b.id}" value="${b.price_per_kg!=null?b.price_per_kg:''}" placeholder="\u2014" style="width:64px;padding:6px 8px;font-size:13px;">`)}
-            <button data-breedvaluehistory="${b.id}" title="See £/kg over time" style="background:none;border:none;color:var(--primary);width:30px;height:30px;flex-shrink:0;padding:0;">${icon('lineChart')}</button>
-          </div>
+        <div class="name" style="font-size:16px;">${b.name}</div><div class="id" style="font-size:13px;">${b.species}</div>
+        <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:flex-end;">
+          ${miniField('Min Prime (mo)', `<input type="number" data-breed-minprime="${b.id}" value="${b.min_prime_months!=null?b.min_prime_months:18}" style="width:68px;padding:6px 8px;font-size:15px;">`)}
+          ${miniField('Max Prime (mo)', `<input type="number" data-breed-maxprime="${b.id}" value="${b.max_prime_months!=null?b.max_prime_months:30}" style="width:68px;padding:6px 8px;font-size:15px;">`)}
+          ${miniField('£/kg', `<input type="number" inputmode="decimal" data-breed-price="${b.id}" value="${b.price_per_kg!=null?b.price_per_kg:''}" placeholder="\u2014" style="width:68px;padding:6px 8px;font-size:15px;">`)}
+          <button data-breedvaluehistory="${b.id}" title="See £/kg over time" class="breedhistorybtn" style="background:none;border:none;color:var(--primary);display:flex;align-items:center;gap:4px;padding:6px 0;flex-shrink:0;">
+            <span style="font-size:13px;font-weight:700;">View history</span>${icon('lineChart')}
+          </button>
         </div>
       </div>
       <button data-toggle-breed="${b.id}" title="${b.active?'Active \u2014 tap to deactivate':'Deactivated \u2014 tap to reactivate'}" style="background:none;border:none;width:30px;height:30px;flex-shrink:0;color:${b.active?'var(--grey)':'var(--red)'};padding:0;">${icon('noentry')}</button>
@@ -6234,9 +6249,9 @@ function renderSettings(){
       <div style="flex:1;min-width:0;">
         <div class="name">${f.name}</div>
         ${last ? `<div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;">
-          ${miniField('Last cost', `<div style="font-size:13px;font-weight:700;color:var(--ink);padding:6px 0;">${fmtGBP(feedRecordCost(last))}</div>`)}
-          ${miniField('Last qty', `<div style="font-size:13px;font-weight:700;color:var(--ink);padding:6px 0;">${fmtQty(last.sacks)}</div>`)}
-          ${miniField('Last date', `<div style="font-size:13px;font-weight:700;color:var(--ink);padding:6px 0;">${fmtMonYY(last.start_date)}</div>`)}
+          ${miniField('Last cost', `<div style="font-size:15px;font-weight:700;color:var(--ink);padding:6px 0;">${fmtGBP(feedRecordCost(last))}</div>`)}
+          ${miniField('Last qty', `<div style="font-size:15px;font-weight:700;color:var(--ink);padding:6px 0;">${fmtQty(last.sacks)}</div>`)}
+          ${miniField('Last date', `<div style="font-size:15px;font-weight:700;color:var(--ink);padding:6px 0;">${fmtMonYY(last.start_date)}</div>`)}
         </div>` : `<div style="font-size:13px;color:var(--grey);margin-top:6px;">No purchases recorded yet</div>`}
       </div>
       <button data-toggle-feedtype="${f.id}" title="${f.active?'Active \u2014 tap to deactivate':'Deactivated \u2014 tap to reactivate'}" style="background:none;border:none;width:30px;height:30px;flex-shrink:0;color:${f.active?'var(--grey)':'var(--red)'};padding:0;">${icon('noentry')}</button>
@@ -6376,7 +6391,7 @@ function renderSettings(){
               <span style="width:28px;height:28px;">${icon('save')}</span>
             </button>
           </div>
-          <div id="backupStatus" style="font-size:12px;color:var(--primary);margin-top:8px;display:none;"></div>
+          <div id="backupStatus" style="font-size:14px;color:var(--primary);margin-top:8px;display:none;"></div>
           <div style="border-top:1px solid var(--line);margin:16px 0;"></div>
           <button id="backupRestoreToggle" style="width:100%;background:none;border:none;display:flex;align-items:center;justify-content:space-between;padding:2px 0;cursor:pointer;">
             <span style="font-size:14px;font-weight:700;color:var(--ink);">Restore from backup file</span>
@@ -6410,7 +6425,7 @@ function renderSettings(){
         ${settingsOpenSection==='export'?`<div class="damagepanel">
           <div style="font-size:13px;color:var(--grey);margin-bottom:10px;">A readable spreadsheet of animals, weights, medicine, and injuries \u2014 handy for sharing with a vet or accountant. For backing up the device itself, use Backup above instead \u2014 this doesn't include fodder, the Medicine Cabinet, moves, farm damage, farmers &amp; vets, or breeding.</div>
           <button id="exportGoBtn" class="fullbtn" style="margin-top:0;">Export</button>
-          <div id="exportStatus" style="font-size:12px;color:var(--primary);margin-top:8px;display:none;"></div>
+          <div id="exportStatus" style="font-size:14px;color:var(--primary);margin-top:8px;display:none;"></div>
         </div>`:''}
       </div>
 
