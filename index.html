@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-19k';
+const APP_BUILD_VERSION = '2026-09-19n';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,27 @@ const APP_BUILD_VERSION = '2026-09-19k';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-19n',
+    date: '19 Sep 2026',
+    bullets: [
+      "System Admin now warns once the total animal count across all farms reaches a scale where the sync approach needs a proper redesign, not just for the farmer to notice."
+    ]
+  },
+  {
+    version: '2026-09-19m',
+    date: '19 Sep 2026',
+    bullets: [
+      "The app now checks for changes to the shared farm database roughly once a minute while it's open, not just when you first open it or come back online."
+    ]
+  },
+  {
+    version: '2026-09-19l',
+    date: '19 Sep 2026',
+    bullets: [
+      "Coming back online now refreshes your view with whatever anyone else changed on the shared farm database while you were offline, after your own changes finish syncing up first."
+    ]
+  },
   {
     version: '2026-09-19k',
     date: '19 Sep 2026',
@@ -713,7 +734,7 @@ async function resolveFarmMembership(){
   const stillMember = savedFarmId && memberships.some(m=>m.farm_id===savedFarmId);
   const ownRow = memberships.find(m=>m.role==='owner');
   authFarmId = stillMember ? savedFarmId : (ownRow ? ownRow.farm_id : memberships[0].farm_id);
-  if(isSuperAdmin()) loadAdminFarmsList(); // fire-and-forget — the System Admin panel just renders empty until this resolves, no need to hold up the rest of boot for it
+  if(isSuperAdmin()){ loadAdminFarmsList(); loadTotalAnimalCount(); } // fire-and-forget — the System Admin panel just renders empty until these resolve, no need to hold up the rest of boot for it
   await loadFarmData(authFarmId);
 }
 // The actual per-farm data load, split out from resolveFarmMembership
@@ -824,6 +845,37 @@ async function loadAdminFarmsList(){
   if(!isSuperAdmin()) return;
   const { data, error } = await sb.from('farms').select('id,name').order('name', {ascending:true});
   if(!error){ adminFarmsList = data || []; render(); }
+}
+// ---------- sync scale warning ----------
+// Everything in the offline sync queue / periodicFarmSync above — the
+// full-table pull every minute, the sequential (not batched) queue
+// retries, no incremental "what changed" diffing — is deliberately
+// simple, sized for a handful of pilot farms with a few hundred animals
+// between them. None of it is designed to hold up at real scale
+// (hundreds of farms, tens of thousands of animals): a full re-pull of
+// every farm-scoped table every minute, multiplied across that many
+// concurrent devices, would be a meaningfully different load profile,
+// and the lack of real incremental sync (see the notes on
+// pullLatestFarmData/periodicFarmSync) would start to matter for
+// bandwidth and battery, not just tidiness. At that point this needs an
+// actual redesign — incremental sync via proper updated_at/change
+// tracking on every table (not just animals), likely Supabase
+// Realtime subscriptions instead of polling, and real conflict
+// resolution (the clash-detection gap noted separately) — not another
+// tweak to what's here.
+//
+// SYNC_SCALE_WARNING_THRESHOLD is a trip-wire for that: once the total
+// animal count across every farm crosses it, System Admin surfaces a
+// warning banner (to Si only — this has no bearing for an ordinary
+// farmer and would only ever confuse them) so the decision to revisit
+// this gets made deliberately, on purpose, rather than the app just
+// quietly getting slower and more expensive to run as farms are added.
+const SYNC_SCALE_WARNING_THRESHOLD=10000;
+let totalAnimalCountAllFarms=null; // cached — {count} across every farm Si can see, i.e. every farm (the auto-admin trigger)
+async function loadTotalAnimalCount(){
+  if(!isSuperAdmin()) return;
+  const { count, error } = await sb.from('animals').select('*', {count:'exact', head:true});
+  if(!error) totalAnimalCountAllFarms = count;
 }
 async function adminSwitchFarm(farmId){
   if(!isSuperAdmin() || farmId===authFarmId) return;
@@ -973,6 +1025,25 @@ async function promoteLocalPhotos(){
   if(promoted){ await persistAll(); render(); }
   photoPromotionRunning=false;
 }
+// Refreshes this device's local copy of every farm-scoped array straight
+// from Supabase — the part that was missing before. Only ever call this
+// AFTER flushSyncQueue/promoteLocalPhotos above have finished pushing
+// this device's own pending changes: loadFarmData() fully replaces the
+// local arrays with whatever's on the server, so pulling first would
+// silently throw away anything not yet synced, replacing it with the
+// (older) shared copy.
+//
+// This catches up on whatever anyone else changed while this device was
+// offline. It does NOT solve two devices editing the very same record
+// while both offline — pushing first still means whichever push reaches
+// Supabase last simply overwrites the other, with no comparison at all.
+// That's the separate clash-detection gap; this only closes "my local
+// copy silently goes stale and stays stale until a manual reload."
+async function pullLatestFarmData(){
+  if(!isOnline || !authFarmId) return;
+  await loadFarmData(authFarmId);
+  render();
+}
 // Which in-memory array a table's records live in, for the tables it's
 // safe to let a farmer discard themselves from the Attention list when
 // stuck — everything with its own record-per-row array. animals,
@@ -1008,7 +1079,41 @@ async function discardStuckSyncEntry(key){
   logMsg('Removed from this device \u2014 you\u2019ll need to add it again.');
   render();
 }
-setInterval(()=>{ if(pendingSyncCount()) flushSyncQueue(); if(recordsWithLocalOnlyPhotos().length) promoteLocalPhotos(); }, 45000);
+// Whether it's safe to replace the local arrays with a fresh pull right
+// now. Pulling mid-keystroke (a focused text field) or mid-dialog (a
+// modal open — including the photo-capture flow) risks disrupting
+// whatever the farmer's actively doing, since loadFarmData() replaces
+// the underlying arrays those screens are built from. Doesn't fully
+// guarantee nothing is ever lost (an abandoned, never-saved draft was
+// always going to vanish on navigating away regardless of polling) —
+// just avoids interrupting the moment someone's actively typing.
+function shouldDeferBackgroundRefresh(){
+  if(modal) return true;
+  const el=document.activeElement;
+  return !!(el && ['INPUT','TEXTAREA','SELECT'].includes(el.tagName));
+}
+// The full periodic cycle: push this device's own pending changes up,
+// finish any stuck photo uploads, then pull a fresh copy of the farm's
+// data down — same push-before-pull ordering as the 'online' event
+// handler, for the same reason (pulling first would overwrite anything
+// not yet synced with the older shared copy).
+//
+// The pull is a full re-fetch of every farm-scoped table, not an
+// incremental "what changed" diff — most of these tables don't actually
+// carry a reliable last-changed timestamp (only `animals` has
+// updated_at; breeds, feed_types, and farmers_vets have no timestamp at
+// all), so there's no column to diff against without a schema change.
+// At the scale of one farm's data (tens to low hundreds of rows, not
+// thousands) a full re-pull every minute costs nothing worth optimising
+// for yet — revisit this if that scale assumption ever stops holding.
+async function periodicFarmSync(){
+  if(!isOnline || !authFarmId) return;
+  if(pendingSyncCount()) await flushSyncQueue();
+  if(recordsWithLocalOnlyPhotos().length) await promoteLocalPhotos();
+  if(shouldDeferBackgroundRefresh()) return; // try again next minute rather than disrupt an active edit
+  await pullLatestFarmData();
+}
+setInterval(periodicFarmSync, 60000);
 
 // Pushes one animal's current full state up to Supabase — called after
 // any local edit, wherever authFarmId is set. A failed sync here doesn't
@@ -6614,9 +6719,13 @@ function renderSettings(){
   const miniField=(labelText, inputHtml)=>`<div><label style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;display:block;margin-bottom:2px;">${labelText}</label>${inputHtml}</div>`;
 
   const sysAdminBody = (()=>{
-    if(adminFarmsList===null) return '<div style="font-size:13px;color:var(--grey);padding:6px 2px;">Loading farms\u2026</div>';
-    if(!adminFarmsList.length) return '<div class="empty">No farms found.</div>';
-    return adminFarmsList.map(f=>{
+    const scaleWarning = (totalAnimalCountAllFarms!==null && totalAnimalCountAllFarms>=SYNC_SCALE_WARNING_THRESHOLD)
+      ? `<div style="background:var(--red-bg);border:1px solid var(--red);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:var(--ink);">
+          <b>${totalAnimalCountAllFarms.toLocaleString()} animals across all farms.</b> This has crossed the point where the current sync approach (full re-pull every minute, no incremental diffing, no realtime, no real conflict resolution) needs an actual redesign rather than another tweak \u2014 see the note on SYNC_SCALE_WARNING_THRESHOLD in the code.
+        </div>` : '';
+    const farmsBody = adminFarmsList===null ? '<div style="font-size:13px;color:var(--grey);padding:6px 2px;">Loading farms\u2026</div>'
+      : !adminFarmsList.length ? '<div class="empty">No farms found.</div>'
+      : adminFarmsList.map(f=>{
       const isCurrent=f.id===authFarmId;
       return `
       <button data-adminswitchfarm="${f.id}" ${isCurrent?'disabled':''} style="width:100%;text-align:left;background:${isCurrent?'var(--green-bg)':'#f3f3f3'};border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;cursor:${isCurrent?'default':'pointer'};color:var(--ink);font-size:15px;font-weight:700;">
@@ -6624,6 +6733,7 @@ function renderSettings(){
         ${isCurrent?'':`<span style="width:18px;height:18px;flex-shrink:0;color:var(--grey);">${icon('triangleRight')}</span>`}
       </button>`;
     }).join('');
+    return scaleWarning + farmsBody;
   })();
 
   const breedsBody = sortedBreeds(breeds).map(b=>`
@@ -11503,7 +11613,12 @@ Rules:
   noServerBtn.style.cursor='default';
   phoneFrame0.appendChild(noServerBtn);
   updateSignalBadge();
-  window.addEventListener('online', ()=>{ isOnline=true; render(); runPendingAnalyses(); flushSyncQueue(); promoteLocalPhotos(); });
+  window.addEventListener('online', async()=>{
+    isOnline=true; render(); runPendingAnalyses();
+    await flushSyncQueue();
+    await promoteLocalPhotos();
+    await pullLatestFarmData();
+  });
   window.addEventListener('offline', ()=>{ isOnline=false; render(); });
 
   // Swipe right anywhere on the phone screen to go back — mirrors the header back arrow.
