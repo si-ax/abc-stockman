@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21m';
+const APP_BUILD_VERSION = '2026-09-21o';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,21 @@ const APP_BUILD_VERSION = '2026-09-21m';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21o',
+    date: '21 Sep 2026',
+    bullets: [
+      "The app now also checks for a new version whenever it's reopened or switched back to, not just when Chrome happens to reload the page \u2014 should mean the \u201cUpdate available\u201d banner shows up sooner after a new build's uploaded rather than waiting on the next accidental reload. (Still not instant \u2014 downloading and caching a new build in the background genuinely takes a bit of time, especially on mobile signal.)"
+    ]
+  },
+  {
+    version: '2026-09-21n',
+    date: '21 Sep 2026',
+    bullets: [
+      "DIAGNOSTIC BUILD for the camera rotation issue \u2014 taking a photo with the in-app camera button will pop up a debug readout instead of fixing anything yet. This is temporary, purely to work out what's actually happening on Si's phone.",
+      "Add Fodder now also asks \u201cDiscard new fodder record?\u201d if you tap Home or Back after adding a photo or filling in a field \u2014 the same gap injury had, fixed the same way."
+    ]
+  },
   {
     version: '2026-09-21m',
     date: '21 Sep 2026',
@@ -3164,6 +3179,16 @@ function hasUnsavedInjuryAddData(){
   if(chk('chk-bleeding') || chk('chk-weightbearing') || chk('chk-hot')) return true;
   return false;
 }
+function hasUnsavedFeedAddData(){
+  if(view!=='feedAdd') return false;
+  if(feedAddPhoto) return true;
+  const val=(id)=>{ const el=document.getElementById(id); return el ? el.value.trim() : ''; };
+  if(val('feedTypeInput')) return true;
+  if(val('feedSackPrice')) return true;
+  if(val('feedSacks')) return true;
+  if(val('feedSupplier')) return true;
+  return false;
+}
 async function goBackContinue(){
   if(view==='move') await commitMoveEntry();
   modal=null; showFilterModal=false;
@@ -3223,6 +3248,10 @@ function goBack(){
   }
   if(hasUnsavedInjuryAddData()){
     showConfirmModal('Discard new injury?', goBackContinue);
+    return;
+  }
+  if(hasUnsavedFeedAddData()){
+    showConfirmModal('Discard new fodder record?', goBackContinue);
     return;
   }
   if(hasUnsavedWeighChanges()){
@@ -8574,26 +8603,39 @@ function renderModal(){
       closeModalOnly();
       resolve(new File([blob], 'capture.jpg', {type: blob.type||'image/jpeg'}));
     };
-    // Draws the current video frame onto a canvas — this is the fallback
-    // path (older/unsupported browsers, or ImageCapture failing on this
-    // particular device/camera), not the primary one any more. Baking a
-    // rotation on here based on screen.orientation.angle turned out not
-    // to reliably fix the sideways-photo problem in practice — this exact
-    // area (raw getUserMedia frame vs. physical device rotation) is known
-    // to be inconsistent across Android/iOS and browser/device
-    // combinations, and evidently this device's video buffer doesn't
-    // relate to that angle the way this assumed. Left un-rotated rather
-    // than guessing again blind; ImageCapture below is the real fix.
-    const captureViaCanvas=()=>{
+    // TEMPORARY DIAGNOSTIC — two blind attempts at the rotation fix
+    // haven't worked, so rather than guess a third time, this surfaces
+    // exactly what this specific phone/browser/camera combination is
+    // actually doing at capture time (which the previous two attempts
+    // were both assuming rather than measuring). Remove once we know
+    // what's going on.
+    const captureDiagnostics=()=>{
+      const track=stream.getVideoTracks()[0];
+      const settings=(track && track.getSettings) ? track.getSettings() : {};
+      return [
+        'ImageCapture supported: '+(!!window.ImageCapture),
+        'video.videoWidth x videoHeight: '+videoEl.videoWidth+' x '+videoEl.videoHeight,
+        'track settings width x height: '+(settings.width||'?')+' x '+(settings.height||'?'),
+        'screen.orientation.type: '+(screen.orientation ? screen.orientation.type : 'n/a'),
+        'screen.orientation.angle: '+(screen.orientation ? screen.orientation.angle : 'n/a'),
+        'window.innerWidth x innerHeight: '+window.innerWidth+' x '+window.innerHeight,
+      ].join('\n');
+    };
+    const captureViaCanvas=(diag)=>{
       const vw=videoEl.videoWidth||1280, vh=videoEl.videoHeight||960;
       const canvas=document.createElement('canvas');
       canvas.width=vw; canvas.height=vh;
       canvas.getContext('2d').drawImage(videoEl, 0, 0, vw, vh);
-      canvas.toBlob((blob)=>{ if(blob) finishWithBlob(blob); }, 'image/jpeg', 0.85);
+      canvas.toBlob((blob)=>{
+        if(!blob) return;
+        if(diag) alert('DIAGNOSTIC (canvas fallback)\n\n'+diag+'\n\ncanvas: '+canvas.width+' x '+canvas.height);
+        finishWithBlob(blob);
+      }, 'image/jpeg', 0.85);
     };
     const takePhoto=()=>{
       if(settled || !stream) return;
       const track=stream.getVideoTracks()[0];
+      const diag=captureDiagnostics();
       // ImageCapture.takePhoto() asks the browser's own camera pipeline
       // for a full photo directly off the track — the same pipeline a
       // native camera app uses — rather than reading whatever the <video>
@@ -8604,10 +8646,17 @@ function renderModal(){
       // at how the phone was held.
       if(window.ImageCapture && track){
         new ImageCapture(track).takePhoto()
-          .then(finishWithBlob)
-          .catch(captureViaCanvas); // some cameras/devices advertise support but fail at call time
+          .then((blob)=>{
+            alert('DIAGNOSTIC (ImageCapture succeeded)\n\n'+diag+'\n\nblob type: '+blob.type+'\nblob size: '+blob.size);
+            finishWithBlob(blob);
+          })
+          .catch((err)=>{ // some cameras/devices advertise support but fail at call time
+            alert('DIAGNOSTIC (ImageCapture FAILED: '+((err&&err.message)||err)+')\n\n'+diag+'\n\nFalling back to canvas capture.');
+            captureViaCanvas(diag);
+          });
       } else {
-        captureViaCanvas();
+        alert('DIAGNOSTIC (ImageCapture not available on this browser)\n\n'+diag);
+        captureViaCanvas(diag);
       }
     };
     // Pulled out so the "Try again" button (shown on a permission denial)
@@ -9155,6 +9204,10 @@ function wireView(){
     }
     if(hasUnsavedInjuryAddData()){
       showConfirmModal('Discard new injury?', goHomeContinue);
+      return;
+    }
+    if(hasUnsavedFeedAddData()){
+      showConfirmModal('Discard new fodder record?', goHomeContinue);
       return;
     }
     if(hasUnsavedWeighChanges()){
@@ -12046,7 +12099,25 @@ Rules:
   // AI call. Instead, show a small persistent banner and let the
   // person choose when it's safe to apply it.
   if('serviceWorker' in navigator){
-    window.addEventListener('load', ()=>{ navigator.serviceWorker.register('./sw.js', {updateViaCache: 'none'}).catch(()=>{}); });
+    let swRegistration=null;
+    window.addEventListener('load', ()=>{
+      navigator.serviceWorker.register('./sw.js', {updateViaCache: 'none'})
+        .then(reg=>{ swRegistration=reg; })
+        .catch(()=>{});
+    });
+    // The initial register() above only checks for a new sw.js once, at
+    // page load — if a new build gets uploaded while this tab/PWA is
+    // already sitting open, nothing prompts Chrome to look again until
+    // the page is reloaded. Explicitly nudging it on every return to the
+    // foreground (reopening the PWA, switching back to this tab) closes
+    // that gap without needing a full reload — the actual install still
+    // takes its own real time in the background either way (fetching and
+    // caching the whole app shell isn't instant, especially on mobile
+    // data), this just makes sure the check itself isn't also waiting on
+    // the next accidental page load to happen.
+    document.addEventListener('visibilitychange', ()=>{
+      if(document.visibilityState==='visible' && swRegistration) swRegistration.update().catch(()=>{});
+    });
     let swRefreshed=false;
     navigator.serviceWorker.addEventListener('controllerchange', ()=>{
       if(swRefreshed) return;
