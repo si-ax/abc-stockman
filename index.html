@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21d';
+const APP_BUILD_VERSION = '2026-09-21g';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,28 @@ const APP_BUILD_VERSION = '2026-09-21d';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21g',
+    date: '21 Sep 2026',
+    bullets: [
+      "Tapping a photo to view it full-size now lets you pinch to zoom in and drag to look around — useful for checking details on an injury or damage photo. Double-tap zooms in and out too."
+    ]
+  },
+  {
+    version: '2026-09-21f',
+    date: '21 Sep 2026',
+    bullets: [
+      "Attention now flags a TB test that's overdue (or never recorded), and warns 4 weeks ahead of one becoming due, so there's time to book it rather than finding out on moving day.",
+      "Add Fodder now has an optional photo \u2014 either the item/label or the receipt, whichever's more useful as evidence, viewable again from the Fodder screen."
+    ]
+  },
+  {
+    version: '2026-09-21e',
+    date: '21 Sep 2026',
+    bullets: [
+      "Fixed wording on the Move screen — an In move now correctly says \"In-farm move\", not \"On-farm move\" (was easy to misread as the On option)."
+    ]
+  },
   {
     version: '2026-09-21d',
     date: '21 Sep 2026',
@@ -322,7 +344,7 @@ const APP_CHANGELOG = [
     date: '21 Sep 2026',
     bullets: [
       "Help screens and other popups now scroll properly if there's too much text to fit on screen at once.",
-      "Returning animals from an on-farm move now asks for the field again instead of reusing the last one.",
+      "Returning animals from an in-farm move now asks for the field again instead of reusing the last one.",
       "Removed the 'pilot'/'Phase 1' wording from the app title."
     ]
   },
@@ -1231,6 +1253,7 @@ async function syncFeedToSupabase(rec){
     id:rec.id, farm_id:authFarmId, feed_type:rec.feed_type, total_cost:rec.total_cost, sacks:rec.sacks,
     start_date:rec.start_date, end_date:rec.end_date, supplier:rec.supplier, farmer_id:rec.farmer_id,
     status:rec.status, using_started_at:rec.using_started_at, exhausted_at:rec.exhausted_at, deleted_at:rec.deleted_at,
+    photo_data:rec.photo_data||null,
   }});
 }
 async function syncFeedUsageToSupabase(usageRec){
@@ -3303,6 +3326,26 @@ function tbTestOverdue(animalId){
   const cutoff=new Date(); cutoff.setMonth(cutoff.getMonth()-6);
   return new Date(last) < cutoff;
 }
+// True in the window before an animal actually goes overdue — i.e. the
+// 6-month mark is within TB_DUE_SOON_WARNING_DAYS but hasn't passed yet.
+// Booking a TB test takes lead time (vet availability, Trading Standards),
+// so flagging only once it's already overdue is too late to act on.
+// Deliberately excludes an animal with no test on record at all — that's
+// tbTestOverdue's job (a harder "this is wrong now", not "coming up").
+const TB_DUE_SOON_WARNING_DAYS = 28;
+function tbTestDueDate(animalId){
+  const last=lastTbTestDate(animalId);
+  if(!last) return null;
+  const due=new Date(last); due.setMonth(due.getMonth()+6);
+  return due;
+}
+function tbTestDueSoon(animalId){
+  const due=tbTestDueDate(animalId);
+  if(!due) return false;
+  const warnFrom=new Date(due); warnFrom.setDate(warnFrom.getDate()-TB_DUE_SOON_WARNING_DAYS);
+  const now=new Date();
+  return now>=warnFrom && now<due;
+}
 // Combined move risk check: an animal that's still in an active medicine
 // withdrawal, or overdue/missing a TB test, is a legal/food-safety hazard
 // to move at all — on farm or off — regardless of whether the farmer's eye
@@ -4493,6 +4536,16 @@ function insightDetail(flagKey, a){
     if(!wd) return '';
     return '<span style="font-size:13px;background:var(--red);color:#fff;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap;">Until '+fmtShortDate(wd.withdrawal_until)+'</span>';
   }
+  if(flagKey==='tboverdue'){
+    const last=lastTbTestDate(a.id);
+    const text = last ? 'Last test '+fmtShortDate(last) : 'No TB test recorded';
+    return '<span style="font-size:13px;background:var(--red);color:#fff;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap;">'+text+'</span>';
+  }
+  if(flagKey==='tbduesoon'){
+    const due=tbTestDueDate(a.id);
+    if(!due) return '';
+    return '<span style="font-size:13px;background:var(--amber);color:#fff;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap;">Due '+fmtShortDate(due.toISOString())+'</span>';
+  }
   if(flagKey==='openinjury'){
     const inj=worstOpenInjury(a);
     if(!inj) return '';
@@ -4548,6 +4601,13 @@ function herdFlags(){
   const inWithdrawal=active.filter(a=>medicineRecords.some(r=>r.animal_id===a.id && new Date(r.withdrawal_until)>=now))
     .sort((a,b)=>new Date(activeWithdrawal(a.id).withdrawal_until)-new Date(activeWithdrawal(b.id).withdrawal_until) || byName(a,b));
   if(inWithdrawal.length) flags.push({key:'withdrawal', label:'In medicine withdrawal', count:inWithdrawal.length, color:'red', animals:inWithdrawal});
+
+  const tbOverdueAnimals=active.filter(a=>tbTestOverdue(a.id)).sort(byName);
+  if(tbOverdueAnimals.length) flags.push({key:'tboverdue', label:'TB test overdue or missing', count:tbOverdueAnimals.length, color:'red', animals:tbOverdueAnimals});
+
+  const tbDueSoonAnimals=active.filter(a=>tbTestDueSoon(a.id))
+    .sort((a,b)=>tbTestDueDate(a.id)-tbTestDueDate(b.id) || byName(a,b));
+  if(tbDueSoonAnimals.length) flags.push({key:'tbduesoon', label:'TB test due within '+TB_DUE_SOON_WARNING_DAYS+' days', count:tbDueSoonAnimals.length, color:'amber', animals:tbDueSoonAnimals});
 
   const openInjury=active.filter(a=>injuryRecords.some(r=>r.animal_id===a.id && !r.resolved_at))
     .sort((a,b)=>{
@@ -5172,7 +5232,7 @@ function renderMove(){
         // possible to pick an animal before Direction/Location are set
         // (commitMoveEntry silently declines to save until both exist), so
         // checking chosen.length alone could leave neither message showing.
-        if(activeRec && activeRec.direction==='in') return `<div style="font-size:13px;color:var(--primary-dark);text-align:center;margin-top:8px;">On-farm move \u2014 no BCMS report or TB check needed.</div>`;
+        if(activeRec && activeRec.direction==='in') return `<div style="font-size:13px;color:var(--primary-dark);text-align:center;margin-top:8px;">In-farm move \u2014 no BCMS report or TB check needed.</div>`;
         return activeRec ? bcmsCheckboxRow(activeRec) : `<div style="font-size:13px;color:var(--primary-dark);text-align:center;margin-top:8px;">Move details auto-save when an animal is added.</div>`;
       })()}
 
@@ -5209,7 +5269,7 @@ function renderMove(){
               <button class="damagebar" data-togglemovehist="${r.id}" style="background:${(rowSt||isStandstillCause)?'var(--red)':'var(--grey)'};font-size:14.5px;padding:8px 12px;">
                 <span>${fmtShortDate(r.date)}${r.location?' '+escapeHtml(r.location):''} (${animalsInMove.length} animal${animalsInMove.length===1?'':'s'})</span>
                 <span style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
-                  ${r.direction?`<span style="width:24px;height:24px;flex-shrink:0;" title="${r.direction==='off'?'Off farm':r.direction==='on'?'On farm':'On-farm move'}">${icon(r.direction==='off'?'exportBox':r.direction==='on'?'importBox':'boxArrowRight')}</span>`:''}
+                  ${r.direction?`<span style="width:24px;height:24px;flex-shrink:0;" title="${r.direction==='off'?'Off farm':r.direction==='on'?'On farm':'In-farm move'}">${icon(r.direction==='off'?'exportBox':r.direction==='on'?'importBox':'boxArrowRight')}</span>`:''}
                   <span style="width:20px;height:20px;flex-shrink:0;">${icon(isOpen?'triangleDown':'triangleRight')}</span>
                 </span>
               </button>
@@ -6139,6 +6199,7 @@ let feedViewExpanded=false;
 let feedLocation='barn'; // 'barn' | 'pasture' — simplified Fodder screen (see renderFeedOriginal for the prior per-sack-cost version)
 let feedLocationLog=[]; // [{date, location, changed_at}] — history of location changes, tracked separately from fodder purchase records
 let feedLastDate=null; // remembers the date across saves within a session, so logging several purchases for the same day doesn't need retyping it each time
+let feedAddPhoto=null; // optional evidence photo for a fodder purchase — either the item/label or the receipt, farmer's choice
 let expandedFeedIds=new Set(), expandedFeedUsageIds=new Set();
 // A fodder record's status is 'using' | 'stored' | 'exhausted'. using_started_at
 // and exhausted_at record when it last entered those two states — used to show
@@ -6268,6 +6329,11 @@ function renderFeed(){
           <div class="formrow compact"><label>Cost</label><div class="formctrl"><input type="text" value="${fmtGBPSmart(feedRecordCost(r))}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
           <div class="formrow compact"><label>Quantity</label><div class="formctrl"><input type="text" value="${fmtQty(r.sacks)}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
           <div class="formrow compact"><label>Supplier</label><div class="formctrl"><input type="text" value="${escapeHtml(r.supplier||'')}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+            <button data-viewfeedphoto="${r.id}" style="background:${r.photo_data?'#fff':'#e8e8e8'};border:1px solid var(--line);border-radius:8px;width:56px;height:56px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;overflow:hidden;flex-shrink:0;">
+              ${r.photo_data?`<img src="${r.photo_data}" data-photo-fallback-key="${escapeHtml(r.photo_data)}" onerror="handlePhotoError(this)" style="width:100%;height:100%;object-fit:cover;">`:`<span style="width:24px;height:24px;color:var(--grey-light);">${icon('camera')}</span>`}
+            </button>
+          </div>
           <div style="display:flex;gap:6px;margin-top:10px;align-items:stretch;">
             <button data-feedstatus="${r.id}" data-feedstatusval="stored" style="flex:1;background:${!isUsing?'var(--grey-light)':'#fff'};color:var(--ink);border:1px solid ${!isUsing?'var(--grey-light)':'var(--line)'};border-radius:8px;padding:9px 4px;font-size:13.5px;font-weight:700;cursor:pointer;">Storage</button>
             <button data-feedstatus="${r.id}" data-feedstatusval="using" style="flex:1;background:${isUsing?'var(--green)':'#fff'};color:${isUsing?'#fff':'var(--ink)'};border:1px solid ${isUsing?'var(--green)':'var(--line)'};border-radius:8px;padding:9px 4px;font-size:13.5px;font-weight:700;cursor:pointer;">Using</button>
@@ -6293,6 +6359,11 @@ function renderFeed(){
           <div class="formrow compact"><label>Cost</label><div class="formctrl"><input type="text" value="${fmtGBPSmart(feedRecordCost(r))}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
           <div class="formrow compact"><label>Quantity</label><div class="formctrl"><input type="text" value="${fmtQty(r.sacks)}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
           <div class="formrow compact"><label>Supplier</label><div class="formctrl"><input type="text" value="${escapeHtml(r.supplier||'')}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+            <button data-viewfeedphoto="${r.id}" style="background:${r.photo_data?'#fff':'#e8e8e8'};border:1px solid var(--line);border-radius:8px;width:56px;height:56px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;overflow:hidden;flex-shrink:0;">
+              ${r.photo_data?`<img src="${r.photo_data}" data-photo-fallback-key="${escapeHtml(r.photo_data)}" onerror="handlePhotoError(this)" style="width:100%;height:100%;object-fit:cover;">`:`<span style="width:24px;height:24px;color:var(--grey-light);">${icon('camera')}</span>`}
+            </button>
+          </div>
           <button data-restorefeed="${r.id}" class="fullbtn ghost" style="margin-top:10px;">Mark as active again</button>
           ${renderFeedUsageExpander(r)}
         </div>`:''}
@@ -6339,6 +6410,9 @@ function renderFeedAdd(){
       <div class="formrow"><label>Supplier</label><div class="formctrl"><input type="text" id="feedSupplier" list="feedSupplierList" placeholder="e.g. Mole Valley Farmers"></div></div>
       <datalist id="feedSupplierList">${[...new Set(feedRecords.map(r=>r.supplier).filter(Boolean))].sort().map(n=>`<option value="${escapeHtml(n)}">`).join('')}</datalist>
       <div class="field-error" id="err-feed" style="padding:0 2px;"></div>
+
+      <label style="margin-top:14px;">Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
+      ${photoCaptureBlockModal('feedphoto', feedAddPhoto, 'Click to take photo of item or receipt')}
     </div>
     ${footerBar([
       {id:'feedadd-help', icon:'help', label:'Help'},
@@ -8027,11 +8101,14 @@ function renderModal(){
     }
   }
   if(modal.type==='imageView'){
-    div.innerHTML=`<div class="modal" style="text-align:center;max-height:88vh;overflow-y:auto;">
-      <div style="display:flex;justify-content:flex-end;margin-bottom:6px;position:sticky;top:0;background:#fff;padding-top:2px;z-index:1;">
+    div.innerHTML=`<div class="modal" style="text-align:center;">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
         <button id="modalCancel" style="background:none;border:none;color:var(--grey);width:30px;height:30px;">${icon('close')}</button>
       </div>
-      <img src="${modal.src}" data-photo-fallback-key="${escapeHtml(modal.src||'')}" onerror="handlePhotoError(this)" style="max-width:100%;border-radius:8px;">
+      <div id="imgZoomViewport" style="width:100%;height:min(65vh,480px);overflow:hidden;touch-action:none;position:relative;background:#111;border-radius:8px;">
+        <img id="imgZoomTarget" src="${modal.src}" data-photo-fallback-key="${escapeHtml(modal.src||'')}" onerror="handlePhotoError(this)" draggable="false" style="position:absolute;top:50%;left:50%;max-width:100%;max-height:100%;transform:translate(-50%,-50%) scale(1);transform-origin:center center;">
+      </div>
+      <div style="font-size:12px;color:var(--grey);margin-top:8px;">Pinch or double-tap to zoom</div>
     </div>`;
   }
   if(modal.type==='actions'){
@@ -8122,6 +8199,92 @@ function renderModal(){
   // function, including that modal's own button handlers.
   const modalCancelBtn=document.getElementById('modalCancel');
   if(modalCancelBtn) modalCancelBtn.onclick=()=>{modal=null; render();};
+  if(modal.type==='imageView'){
+    // Pinch-zoom and drag-to-pan on the photo, scoped entirely to this one
+    // viewport — deliberately not touching the page's own viewport meta
+    // tag (maximum-scale=1 is set globally so normal screens don't zoom
+    // by accident), so this is its own small touch-handling layer rather
+    // than the browser's native pinch behaviour.
+    const viewport=document.getElementById('imgZoomViewport');
+    const img=document.getElementById('imgZoomTarget');
+    if(viewport && img){
+      let scale=1, tx=0, ty=0;
+      let startDist=0, startScale=1;
+      let startTx=0, startTy=0, startX=0, startY=0;
+      let panPointerId=null;
+      let lastTapTime=0, lastTapX=0, lastTapY=0;
+      const MIN_SCALE=1, MAX_SCALE=4, DOUBLE_TAP_ZOOM=2.5;
+
+      const apply=()=>{ img.style.transform='translate(-50%,-50%) translate('+tx+'px,'+ty+'px) scale('+scale+')'; };
+
+      // Approximate bounds (based on the viewport box, not the image's
+      // actual rendered size, which varies by aspect ratio) — generous
+      // enough to not feel restrictive while stopping the image being
+      // dragged entirely out of view.
+      const clampPan=()=>{
+        const maxOffsetX = (viewport.clientWidth*(scale-1))/2 + viewport.clientWidth*0.15;
+        const maxOffsetY = (viewport.clientHeight*(scale-1))/2 + viewport.clientHeight*0.15;
+        tx=Math.max(-maxOffsetX, Math.min(maxOffsetX, tx));
+        ty=Math.max(-maxOffsetY, Math.min(maxOffsetY, ty));
+      };
+      const touchDist=(t0,t1)=>Math.hypot(t1.clientX-t0.clientX, t1.clientY-t0.clientY);
+      const toggleZoom=()=>{
+        if(scale>1){ scale=1; tx=0; ty=0; } else { scale=DOUBLE_TAP_ZOOM; tx=0; ty=0; }
+        apply();
+      };
+
+      viewport.addEventListener('touchstart', (e)=>{
+        if(e.touches.length===2){
+          e.preventDefault();
+          startDist=touchDist(e.touches[0], e.touches[1]);
+          startScale=scale;
+          panPointerId=null; // pinch takes over from any single-finger pan in progress
+        } else if(e.touches.length===1){
+          const now=Date.now(), t=e.touches[0];
+          if(now-lastTapTime<350 && Math.hypot(t.clientX-lastTapX, t.clientY-lastTapY)<30){
+            e.preventDefault();
+            toggleZoom();
+            lastTapTime=0; // consumed — don't chain into a false triple-tap
+            return;
+          }
+          lastTapTime=now; lastTapX=t.clientX; lastTapY=t.clientY;
+          if(scale>1){
+            panPointerId=t.identifier;
+            startX=t.clientX; startY=t.clientY; startTx=tx; startTy=ty;
+          }
+        }
+      }, {passive:false});
+
+      viewport.addEventListener('touchmove', (e)=>{
+        if(e.touches.length===2 && startDist>0){
+          e.preventDefault();
+          scale=Math.max(MIN_SCALE, Math.min(MAX_SCALE, startScale*(touchDist(e.touches[0],e.touches[1])/startDist)));
+          clampPan();
+          apply();
+        } else if(e.touches.length===1 && panPointerId!==null && scale>1){
+          const t=[...e.touches].find(x=>x.identifier===panPointerId);
+          if(t){
+            e.preventDefault();
+            tx=startTx+(t.clientX-startX);
+            ty=startTy+(t.clientY-startY);
+            clampPan();
+            apply();
+          }
+        }
+      }, {passive:false});
+
+      const endTouch=()=>{
+        startDist=0;
+        panPointerId=null;
+        if(scale<=1){ scale=1; tx=0; ty=0; apply(); }
+      };
+      viewport.addEventListener('touchend', endTouch);
+      viewport.addEventListener('touchcancel', endTouch);
+
+      // Desktop convenience — double-click mirrors double-tap.
+      img.addEventListener('dblclick', toggleZoom);
+    }
+  }
   // Unconditional (not gated to one modal type) so any modal that embeds a
   // "Settings" link — the plain infoText popups, or the Health Score/Market
   // Value factor breakdowns, which render their own HTML directly rather
@@ -9317,6 +9480,8 @@ function wireView(){
       } else if(flagKey==='redhealth' || flagKey==='declining'){
         view='healthScore';
       } else if(flagKey==='withdrawal'){
+        healthTarget=animalId; view='medicine';
+      } else if(flagKey==='tboverdue' || flagKey==='tbduesoon'){
         healthTarget=animalId; view='medicine';
       } else if(flagKey==='openinjury'){
         healthTarget=animalId; view='injury';
@@ -10625,7 +10790,7 @@ Rules:
       const chosen=animalIds.map(id=>animals.find(a=>a.id===id)).filter(Boolean);
       const farmCph=farmSettings.cph||'(not set in Settings)';
       const fmtDDMMYYYY=(isoDateStr)=>{ const [y,m,d]=isoDateStr.split('-'); return d+'-'+m+'-'+y; };
-      const bodyLines=['Date: '+fmtDDMMYYYY(dateVal), 'On/off/in farm: '+(directionVal==='on'?'On':directionVal==='off'?'Off':'In (on-farm field move)')];
+      const bodyLines=['Date: '+fmtDDMMYYYY(dateVal), 'On/off/in farm: '+(directionVal==='on'?'On':directionVal==='off'?'Off':'In (move between fields on the farm)')];
       if(directionVal==='off'){
         bodyLines.push('Origin CPH: '+farmCph);
         bodyLines.push('Destination: '+(locationVal.trim()||'(not entered)'));
@@ -10883,7 +11048,7 @@ Rules:
     if(feedEntryHelpBtn) feedEntryHelpBtn.onclick=()=>{ showInfoModal('\u2022 Active fodder purchases show green for what\u2019s currently being used, grey for what\u2019s in storage to be used in the future.\n\n\u2022 Anything marked as exhausted displays under View Previous.\n\n\u2022 Expand a record to change its status, or to delete it (if added in error).\n\n\u2022 There can only be 1 of each fodder type being used at a time.\n\n\u2022 Fodder usage is used as a cost against your animals and impacts your profit.\n\n\u2022 Fodder purchases are totalled in the reports.'); };
     const feedLocationHelpBtn=document.getElementById('feedLocationHelp');
     if(feedLocationHelpBtn) feedLocationHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('Record the location of your animals (ignore new-borns who are kept inside when the rest are out) as this will be used to calculate future fodder spend (future functionality).'); };
-    document.getElementById('feed-add').onclick=()=>{ view='feedAdd'; render(); };
+    document.getElementById('feed-add').onclick=()=>{ feedAddPhoto=null; view='feedAdd'; render(); };
     document.querySelectorAll('[data-togglefeed]').forEach(el=>el.onclick=()=>{
       const id=el.dataset.togglefeed;
       const wasOpen=expandedFeedIds.has(id);
@@ -10963,6 +11128,12 @@ Rules:
       render();
       showSaveToast(rec.feed_type+' now in Storage');
     });
+    document.querySelectorAll('[data-viewfeedphoto]').forEach(el=>el.onclick=()=>{
+      const r=feedRecords.find(x=>x.id===el.dataset.viewfeedphoto);
+      if(!r || !r.photo_data){ showInfoModal('Photo not taken'); return; }
+      modal={type:'imageView', src:r.photo_data};
+      render();
+    });
     document.querySelectorAll('[data-delfeed]').forEach(el=>el.onclick=()=>{
       showConfirmModal('Are you sure you want to delete this fodder record?\nOnly do this if the record was added by mistake, as Fodder costs are used in reports and animal profits.', async()=>{
         const rec=feedRecords.find(r=>r.id===el.dataset.delfeed);
@@ -11010,8 +11181,9 @@ Rules:
   if(view==='feedAdd'){
     wireGoKeySubmit('feedadd-save');
     wireDateAutoAdvance('feedDate', 'feedTypeInput');
+    wirePhotoCaptureModal('feedphoto', (dataUrl)=>{ feedAddPhoto=dataUrl; updatePhotoPreview('feedphoto', dataUrl); });
     const feedAddHelpBtn=document.getElementById('feedadd-help');
-    if(feedAddHelpBtn) feedAddHelpBtn.onclick=()=>{ showInfoModal('Log a fodder purchase, then say whether it\u2019s being used now or going into storage.\nIf another purchase of the same type is already marked Using, you\u2019ll be asked whether to mark that one as exhausted.'); };
+    if(feedAddHelpBtn) feedAddHelpBtn.onclick=()=>{ showInfoModal('Log a fodder purchase, then say whether it\u2019s being used now or going into storage.\nIf another purchase of the same type is already marked Using, you\u2019ll be asked whether to mark that one as exhausted.\n\nThe photo is optional \u2014 whatever\u2019s more useful to you: the item itself (bag, label, batch number) or the receipt as proof of purchase.'); };
     const saveBtn=document.getElementById('feedadd-save');
     if(saveBtn) saveBtn.onclick=async()=>{
       const errEl=document.getElementById('err-feed'); errEl.textContent='';
@@ -11032,7 +11204,7 @@ Rules:
       if(isNaN(sacks) || sacks<=0){ errEl.textContent='Enter a number of sacks greater than 0.'; return; }
 
       const rec={id:uuid(), feed_type:feedType, total_cost:totalCost, sacks, start_date:date, end_date:null, supplier:supplierVal, farmer_id:currentFarmerId,
-        status:'stored', using_started_at:null, exhausted_at:null};
+        status:'stored', using_started_at:null, exhausted_at:null, photo_data:feedAddPhoto||null};
       feedRecords.push(rec);
       await persistAll();
       await syncFeedToSupabase(rec);
