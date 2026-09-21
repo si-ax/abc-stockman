@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-19o';
+const APP_BUILD_VERSION = '2026-09-21d';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,39 @@ const APP_BUILD_VERSION = '2026-09-19o';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21d',
+    date: '21 Sep 2026',
+    bullets: [
+      "Farm Damage/Improvement: reworded the improvement banner, the Details box now stays compact until there's something in it, added a help (?) button next to the SFI action code field, and removed the separate SFI caption text.",
+      "Damage and Improvement entries now show a small icon in the list (barn for damage, an upward arrow in a box for improvements) — matching the Move screen.",
+      "The app now checks for shared farm changes every 10 minutes in the background, not every minute — should mean far fewer unexpected jumps back to Home while you're mid-task."
+    ]
+  },
+  {
+    version: '2026-09-21c',
+    date: '21 Sep 2026',
+    bullets: [
+      "On-farm ('In') moves now show a clearer box-and-arrow icon in Move history, instead of the walking icon."
+    ]
+  },
+  {
+    version: '2026-09-21b',
+    date: '21 Sep 2026',
+    bullets: [
+      "Help screens and other popups now scroll properly if there's too much text to fit on screen at once.",
+      "Returning animals from an on-farm move now asks for the field again instead of reusing the last one.",
+      "Removed the 'pilot'/'Phase 1' wording from the app title."
+    ]
+  },
+  {
+    version: '2026-09-21a',
+    date: '21 Sep 2026',
+    bullets: [
+      "Move now has an 'In' option for moving animals between fields on the farm — no CPH needed, and it won't trigger a TB check, standstill, or BCMS report.",
+      "Farm Damage can now also record Improvements (new hedges, ponds, fencing, etc.) as evidence for farming grants such as the Sustainable Farming Incentive, with an optional SFI action code."
+    ]
+  },
   {
     version: '2026-09-19o',
     date: '19 Sep 2026',
@@ -858,12 +891,12 @@ async function loadAdminFarmsList(){
 }
 // ---------- sync scale warning ----------
 // Everything in the offline sync queue / periodicFarmSync above — the
-// full-table pull every minute, the sequential (not batched) queue
+// full-table pull every 10 minutes, the sequential (not batched) queue
 // retries, no incremental "what changed" diffing — is deliberately
 // simple, sized for a handful of pilot farms with a few hundred animals
 // between them. None of it is designed to hold up at real scale
 // (hundreds of farms, tens of thousands of animals): a full re-pull of
-// every farm-scoped table every minute, multiplied across that many
+// every farm-scoped table every 10 minutes, multiplied across that many
 // concurrent devices, would be a meaningfully different load profile,
 // and the lack of real incremental sync (see the notes on
 // pullLatestFarmData/periodicFarmSync) would start to matter for
@@ -1114,16 +1147,16 @@ function shouldDeferBackgroundRefresh(){
 // updated_at; breeds, feed_types, and farmers_vets have no timestamp at
 // all), so there's no column to diff against without a schema change.
 // At the scale of one farm's data (tens to low hundreds of rows, not
-// thousands) a full re-pull every minute costs nothing worth optimising
+// thousands) a full re-pull every 10 minutes costs nothing worth optimising
 // for yet — revisit this if that scale assumption ever stops holding.
 async function periodicFarmSync(){
   if(!isOnline || !authFarmId) return;
   if(pendingSyncCount()) await flushSyncQueue();
   if(recordsWithLocalOnlyPhotos().length) await promoteLocalPhotos();
-  if(shouldDeferBackgroundRefresh()) return; // try again next minute rather than disrupt an active edit
+  if(shouldDeferBackgroundRefresh()) return; // try again next cycle rather than disrupt an active edit
   await pullLatestFarmData();
 }
-setInterval(periodicFarmSync, 60000);
+setInterval(periodicFarmSync, 600000); // 10 minutes — single-farmer use, no other users on the same farm to stay current with, so a slower background check is enough and less likely to interrupt whatever screen the farmer's on
 
 // Pushes one animal's current full state up to Supabase — called after
 // any local edit, wherever authFarmId is set. A failed sync here doesn't
@@ -1492,6 +1525,7 @@ const ICONS = {
   exportBox: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><g transform="scale(-1,1) translate(-24,0)"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5"/><path d="M14 12H3"/><path d="M8 7 3 12l5 5"/></g></svg>',
   importBox: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5"/><path d="M3 12h11"/><path d="M9 7l5 5-5 5"/></svg>',
   boxArrowRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7.5 12h9"/><path d="M12.5 8l4 4-4 4"/></svg>',
+  boxArrowUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 15c3 0 4-6 8-8"/><path d="M11.3 6.8 15 7 15.3 10.7"/></svg>',
 };
 function icon(name){ return ICONS[name] || ''; }
 // CPH numbers are entered on a numeric keypad (no slash key), formatted as
@@ -4941,7 +4975,10 @@ function renderDamageList(){
         <div style="margin:6px 0;">
           <button class="damagebar" data-toggledamage="${d.id}" style="background:${urgencyColorVar(d.urgency)};font-size:16px;padding:8px 12px;${d.urgency!=='high'&&d.urgency!=='med'?'color:var(--ink);':''}">
             <span>${fmtShortDate(d.created_at)}&nbsp;&nbsp;&nbsp;${escapeHtml(d.summary)}</span>
-            <span style="width:20px;height:20px;flex-shrink:0;">${icon(isOpen?'triangleDown':'triangleRight')}</span>
+            <span style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
+              <span style="width:22px;height:22px;flex-shrink:0;" title="${d.record_type==='improvement'?'Improvement':'Damage'}">${icon(d.record_type==='improvement'?'boxArrowUp':'barn')}</span>
+              <span style="width:20px;height:20px;flex-shrink:0;">${icon(isOpen?'triangleDown':'triangleRight')}</span>
+            </span>
           </button>
           ${isOpen?`
           <div class="damagepanel">
@@ -4956,7 +4993,7 @@ function renderDamageList(){
               <button class="urgencychip ${d.urgency==='high'?'on':''}" data-urgency="high" data-editdamageurgency="${d.id}">High</button>
             </div>
             <label>Details <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
-            <textarea data-editdamagedetails="${d.id}" maxlength="1000" style="min-height:90px;">${escapeHtml(d.details||'')}</textarea>
+            <textarea data-editdamagedetails="${d.id}" maxlength="1000" style="height:38px;overflow:hidden;resize:none;">${escapeHtml(d.details||'')}</textarea>
             ${d.record_type==='improvement' && d.sfi_action_code?`<div style="font-size:13px;color:var(--primary-dark);font-weight:700;margin-top:6px;">SFI action: ${escapeHtml(d.sfi_action_code)}</div>`:''}
             <div style="display:flex;gap:10px;align-items:center;justify-content:center;margin-top:10px;">
               ${photoCaptureBlockModal('damagerow'+d.id, d.photo_data)}
@@ -4983,7 +5020,10 @@ function renderDamageList(){
             <div style="margin:6px 0;">
               <button class="damagebar" data-toggledamagehist="${d.id}" style="background:var(--grey);font-size:14.5px;padding:8px 12px;">
                 <span>${fmtShortDate(d.created_at)}&nbsp;&nbsp;&nbsp;${escapeHtml(d.summary)}</span>
-                <span style="width:20px;height:20px;flex-shrink:0;">${icon(isOpen?'triangleDown':'triangleRight')}</span>
+                <span style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
+                  <span style="width:22px;height:22px;flex-shrink:0;" title="${isImprovement?'Improvement':'Damage'}">${icon(isImprovement?'boxArrowUp':'barn')}</span>
+                  <span style="width:20px;height:20px;flex-shrink:0;">${icon(isOpen?'triangleDown':'triangleRight')}</span>
+                </span>
               </button>
               ${isOpen?`
               <div class="damagepanel">
@@ -5026,7 +5066,7 @@ function renderDamageAdd(){
         <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="damageTypeRadio" id="damageTypeDamage" ${damageTypePick==='damage'?'checked':''}> Damage</label>
         <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="damageTypeRadio" id="damageTypeImprovement" ${damageTypePick==='improvement'?'checked':''}> Improvement</label>
       </div></div>
-      <div id="damageImprovementLabel" style="text-align:center;font-size:13px;font-weight:700;color:var(--primary-dark);margin:4px 0 10px;display:${damageTypePick==='improvement'?'block':'none'};">Record improvements for future farming grants</div>
+      <div id="damageImprovementLabel" style="text-align:center;font-size:13px;font-weight:700;color:var(--primary-dark);margin:4px 0 10px;display:${damageTypePick==='improvement'?'block':'none'};">Record improvements as evidence for grants</div>
 
       ${photoCaptureBlockModal('damagephoto', damagePhotoTemp, 'Click to take photo of damage')}
 
@@ -5054,14 +5094,13 @@ function renderDamageAdd(){
       <div class="field-error" id="err-urgency"></div>
 
       <label style="margin-top:14px;">Details <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
-      <textarea id="damageDetails" maxlength="1000" style="min-height:38px;overflow:hidden;resize:none;" oninput="document.getElementById('damageCharCount').textContent=(1000-this.value.length)+' characters remaining'"></textarea>
+      <textarea id="damageDetails" maxlength="1000" style="height:38px;overflow:hidden;resize:none;" oninput="autoGrowTextarea(this);document.getElementById('damageCharCount').textContent=(1000-this.value.length)+' characters remaining'"></textarea>
       <div id="damageCharCount" style="font-size:13px;color:var(--grey);text-align:right;margin-top:2px;">1000 characters remaining</div>
 
       <div id="damageSfiCodeBlock" style="display:${damageTypePick==='improvement'?'block':'none'};">
-        <label style="margin-top:14px;">SFI action code <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
+        <label style="margin-top:14px;display:flex;align-items:center;gap:6px;">SFI action code <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span><button id="damageSfiHelp" type="button" style="background:none;border:none;cursor:pointer;color:var(--grey);width:20px;height:20px;padding:0;flex-shrink:0;">${icon('questionMark')}</button></label>
         <input type="text" id="damageSfiCode" list="damageSfiCodeList" placeholder="e.g. CLIG3" maxlength="20" value="${damageSfiCodeVal.replace(/"/g,'&quot;')}" style="text-transform:uppercase;">
         <datalist id="damageSfiCodeList">${[...new Set(damageRecords.map(d=>d.sfi_action_code).filter(Boolean))].sort().map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
-        <div style="font-size:12px;color:var(--grey);margin-top:2px;">Tag this with the SFI action it's evidence for, if it's part of an agreement (e.g. CHRW2 for hedgerow work).</div>
       </div>
     </div>
     ${footerBar([
@@ -6762,7 +6801,7 @@ function renderSettings(){
   const sysAdminBody = (()=>{
     const scaleWarning = (totalAnimalCountAllFarms!==null && totalAnimalCountAllFarms>=SYNC_SCALE_WARNING_THRESHOLD)
       ? `<div style="background:var(--red-bg);border:1px solid var(--red);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:var(--ink);">
-          <b>${totalAnimalCountAllFarms.toLocaleString()} animals across all farms.</b> This has crossed the point where the current sync approach (full re-pull every minute, no incremental diffing, no realtime, no real conflict resolution) needs an actual redesign rather than another tweak \u2014 see the note on SYNC_SCALE_WARNING_THRESHOLD in the code.
+          <b>${totalAnimalCountAllFarms.toLocaleString()} animals across all farms.</b> This has crossed the point where the current sync approach (full re-pull every 10 minutes, no incremental diffing, no realtime, no real conflict resolution) needs an actual redesign rather than another tweak \u2014 see the note on SYNC_SCALE_WARNING_THRESHOLD in the code.
         </div>` : '';
     const farmsBody = adminFarmsList===null ? '<div style="font-size:13px;color:var(--grey);padding:6px 2px;">Loading farms\u2026</div>'
       : !adminFarmsList.length ? '<div class="empty">No farms found.</div>'
@@ -7045,6 +7084,16 @@ function renderSettings(){
 }
 
 function escapeHtml(s){const d=document.createElement('div'); d.textContent=s; return d.innerHTML;}
+// Grows a textarea to fit its current content (used for the Details boxes
+// on Farm Damage/Improvement) — starts single-line when empty so it reads
+// as a normal input the farmer can tap into, then expands as they type or
+// once real content is loaded in, rather than always reserving a tall,
+// mostly-empty box.
+function autoGrowTextarea(el){
+  if(!el) return;
+  el.style.height='auto';
+  el.style.height=Math.max(el.scrollHeight, 38)+'px';
+}
 
 function renderFilterModal(){
   const screen=document.getElementById('screen');
@@ -10657,12 +10706,16 @@ Rules:
       await syncDamageToSupabase(d);
       showSaveToast('Updated');
     });
-    document.querySelectorAll('[data-editdamagedetails]').forEach(el=>el.onchange=async()=>{
-      const d=damageRecords.find(x=>x.id===el.dataset.editdamagedetails);
-      d.details=el.value.trim()||null;
-      await persistAll();
-      await syncDamageToSupabase(d);
-      showSaveToast('Updated');
+    document.querySelectorAll('[data-editdamagedetails]').forEach(el=>{
+      autoGrowTextarea(el); // pre-existing content starts sized to fit, not clipped to one line
+      el.oninput=()=>autoGrowTextarea(el);
+      el.onchange=async()=>{
+        const d=damageRecords.find(x=>x.id===el.dataset.editdamagedetails);
+        d.details=el.value.trim()||null;
+        await persistAll();
+        await syncDamageToSupabase(d);
+        showSaveToast('Updated');
+      };
     });
     document.querySelectorAll('[data-editdamageurgency]').forEach(btn=>btn.onclick=async()=>{
       const d=damageRecords.find(x=>x.id===btn.dataset.editdamageurgency);
@@ -10741,6 +10794,8 @@ Rules:
     };
     const damageSfiCodeEl=document.getElementById('damageSfiCode');
     if(damageSfiCodeEl) damageSfiCodeEl.oninput=()=>{ damageSfiCodeVal=damageSfiCodeEl.value; };
+    const damageSfiHelpEl=document.getElementById('damageSfiHelp');
+    if(damageSfiHelpEl) damageSfiHelpEl.onclick=()=>{ showInfoModal('Tag this improvement with the SFI action code you are recording it as evidence for the agreement e.g. CHRW2 for hedgerow work. This can then easily be reported on.'); };
 
     wirePhotoCaptureModal('damagephoto', (dataUrl)=>{ damagePhotoTemp=dataUrl; updatePhotoPreview('damagephoto', dataUrl); });
     // Grows the Details box to fit whatever's actually been typed, rather
