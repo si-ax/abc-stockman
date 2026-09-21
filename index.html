@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21g';
+const APP_BUILD_VERSION = '2026-09-21h';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,13 @@ const APP_BUILD_VERSION = '2026-09-21g';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21h',
+    date: '21 Sep 2026',
+    bullets: [
+      "Fixed the app not picking up new builds once installed \u2014 the background updater wasn't being told a new version existed, so it kept quietly serving the old one instead of showing the \u201cUpdate available\u201d prompt. If you're on an old build and don't see this note after opening the app, clear that site's data in Chrome once to force it."
+    ]
+  },
   {
     version: '2026-09-21g',
     date: '21 Sep 2026',
@@ -11940,7 +11947,7 @@ Rules:
   // AI call. Instead, show a small persistent banner and let the
   // person choose when it's safe to apply it.
   if('serviceWorker' in navigator){
-    window.addEventListener('load', ()=>{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
+    window.addEventListener('load', ()=>{ navigator.serviceWorker.register('./sw.js', {updateViaCache: 'none'}).catch(()=>{}); });
     let swRefreshed=false;
     navigator.serviceWorker.addEventListener('controllerchange', ()=>{
       if(swRefreshed) return;

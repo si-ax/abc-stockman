@@ -2,7 +2,7 @@
 // APP_BUILD_VERSION in index.html) — it's what tells the service worker
 // to drop the old cached files and pick up the new ones. It doesn't need
 // to match APP_BUILD_VERSION exactly, it just needs to CHANGE.
-const CACHE_NAME = 'abc-stockman-2026-09-19o';
+const CACHE_NAME = 'abc-stockman-2026-09-21h';
 
 const APP_SHELL = [
   './',
@@ -37,8 +37,12 @@ self.addEventListener('fetch', (event) => {
   // Network-first: when he's got signal, always fetch the latest copy
   // (and refresh the cache with it). When he doesn't, fall back to
   // whatever was last cached, so the app still opens out in the field.
+  // cache:'reload' bypasses the browser's own HTTP cache for this fetch —
+  // without it, GitHub Pages' Cache-Control headers can let the browser
+  // silently hand back a stale response here even though this looks like
+  // a fresh network request, which defeats "network-first" entirely.
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, {cache: 'reload'})
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
