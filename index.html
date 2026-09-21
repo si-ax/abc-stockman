@@ -1149,7 +1149,7 @@ async function syncDamageToSupabase(d){
   await queuedSync('damage_records:'+d.id, {table:'damage_records', method:'upsert', label:'this damage record', payload:{
     id:d.id, farm_id:authFarmId, photo_data:d.photo_data, gps:d.gps, location:d.location, summary:d.summary,
     details:d.details, urgency:d.urgency, fixed_at:d.fixed_at, not_going_to_fix:!!d.not_going_to_fix,
-    created_at:d.created_at, farmer_id:d.farmer_id,
+    created_at:d.created_at, farmer_id:d.farmer_id, record_type:d.record_type||'damage', sfi_action_code:d.sfi_action_code||null,
   }});
 }
 
@@ -2104,7 +2104,8 @@ function isLockedOut(){
   if(lockoutCleared || !installDate) return false;
   return (Date.now()-new Date(installDate).getTime())/86400000 > TRIAL_LOCKOUT_DAYS;
 }
-// damageRecords = [{id, photo_data, gps:{lat,lng}|null, location, summary, details, urgency, fixed_at, created_at}]
+// damageRecords = [{id, photo_data, gps:{lat,lng}|null, location, summary, details, urgency, fixed_at, created_at, record_type:'damage'|'improvement', sfi_action_code}]
+// record_type is absent/'damage' on records saved before this field existed — always fall back to 'damage' when reading it.
 // moveRecords = [{id, date, gps:{lat,lng}|null, location, reason, animal_ids:[...], created_at, direction:'on'|'off'|null, dest_cph:string|null, bcms_reported:boolean}]
 // weights = [{id, animal_id, weight_kg, bcs, note, recorded_at}]
 // feedRecords = [{id, animal_id, feed_type_id, amount, unit, started_at, ended_at, is_active}]
@@ -2818,6 +2819,7 @@ async function selectAnimalForMove(id){
 // return to, just the Move screen itself underneath.
 function queueMoveRiskWarnings(ids, returnTo){
   if(moveWarningsSuppressed) return;
+  if(moveDirection==='in') return; // on-farm field move — no TB/withdrawal check needed, the animal isn't leaving the farm
   const risky=[...new Set(ids)].filter(id=>animalMoveRisk(id));
   if(!risky.length) return;
   modal={type:'moveRiskWarning', animalId:risky[0], queue:risky.slice(1), returnTo:returnTo||null};
@@ -2885,12 +2887,14 @@ function captureMedFormValues(){
 let injAddPhoto=null;
 let damageUrgencyPick=null; // urgency chosen on the add form
 let damagePhotoTemp=null, damageGpsTemp=null;
+let damageTypePick='damage'; // 'damage'|'improvement' — chosen on the add form; damage is the default
+let damageSfiCodeVal=''; // SFI action code (e.g. CLIG3) — only shown/used for improvement records
 let weighDate=null; // YYYY-MM-DD, set on load
 let weighRecordedExpanded=false;
 let bcsDropdownOpen=false;
 let weighSessionRecordId=null; // the weights[] record currently being edited for the selected animal+date
 let currentBcsValue=null; // BCS value currently shown in the UI (may not be committed yet)
-let moveDate=null, moveGps=null, moveAnimalIds=[], moveSessionRecordId=null, moveLocationVal='', moveReasonVal='', moveDirection=null, moveDestCphVal=''; // moveDirection: null|'on'|'off'
+let moveDate=null, moveGps=null, moveAnimalIds=[], moveSessionRecordId=null, moveLocationVal='', moveReasonVal='', moveDirection=null, moveDestCphVal=''; // moveDirection: null|'on'|'off'|'in' ('in' = on-farm field move — no CPH, no TB/standstill checks, no BCMS report)
 let moveWarningsSuppressed=false; // "don't alert for any other animals in this move" — reset wherever a fresh move session starts
 let moveEnterDetailsHintSuppressed=false; // "don't show me this again this session" — deliberately NEVER reset by a fresh move session; only a full page reload clears it
 let newAnimalEid=null, newAnimalMotherId=null, newAnimalMotherExternalEid=null, newAnimalFatherId=null, newAnimalFatherExternalEid=null, newAnimalPhoto=null;
@@ -3310,6 +3314,7 @@ function birthReportStatus(a){
   return { daysLeft, overdue: daysLeft<=0 };
 }
 function moveReportStatus(rec){
+  if(rec.direction==='in') return null; // on-farm field move — never a BCMS reporting obligation
   if(rec.bcms_reported) return null;
   const daysLeft = 3 - daysSince(rec.date);
   return { daysLeft, overdue: daysLeft<=0 };
@@ -3796,7 +3801,7 @@ const WALKTHROUGH_STEPS=[
       {id:'wt-breeding', icon:'stork', label:'Breeding', text:'Highlighted green if pregnant or with offspring, but red/amber if previous issues with birthing or mothering. Also shows offspring details.'},
       {id:'wt-sum-medicine', icon:'syringe', label:'Medicine', text:'It is a legal requirement to record all medicine given. Saving the details for each medicine in Settings helps fill in:\n\u2022 Estimating dosage (based on animal weight)\n\u2022 Estimating withdrawal dates\n\u2022 Estimating cost of the dose \u2013 used for calculating the cost of that animal & monthly medicine costs for the herd\n\nThis tile is highlighted red if the animal is still in a withdrawal period (number of days remaining displays)\n\nWARNING: Estimates on the dosage are based on the animal\u2019s last weight. You must consult a vet for accurate dosage and withdrawal periods'},
       {id:'wt-injury', icon:'bandage', label:'Injury', text:'Log the body part affected and a severity level. This feeds into the animal\u2019s Health Score. Add a photo if you can to help track progression of the injury. Always get a vet\u2019s opinion for anything serious. Once it\u2019s healed, mark the injury as recovered. This tile is coloured red if there\u2019s a current injury.'},
-      {id:'wt-move', icon:'pin', label:'Move', text:'Move animal on/off farm. Highlighted red if last move was off-farm. A red syringe icon flags any animal still in medicine withdrawal or missing a TB test \u2014 shown both when picking animals to add and once they\u2019re on the move, so it\u2019s caught before the animal leaves rather than only when it\u2019s later marked sold.'},
+      {id:'wt-move', icon:'pin', label:'Move', text:'Move animal on/off farm, or use In for a move between fields on the farm \u2014 no CPH, and no TB/withdrawal check or BCMS report needed since the animal never leaves the farm. Highlighted red if last move was off-farm. A red syringe icon flags any animal still in medicine withdrawal or missing a TB test on an on/off move \u2014 shown both when picking animals to add and once they\u2019re on the move, so it\u2019s caught before the animal leaves rather than only when it\u2019s later marked sold.'},
       {id:'wt-weigh', icon:'scale', label:'Weigh / BCS', text:'Regular weighing tracks growth and feeds directly into an animal\u2019s Health Score and Market Value. Body Condition Score (BCS) is a 1\u20135 scale judged by eye and feel \u2014 1 is very thin, 5 is very fat, and most animals should sit around the middle. Weigh one animal at a time: pick it from the list or scan its tag, enter weight and BCS, and save. You\u2019ll be offered the next animal straight away, so a batch of animals can be worked through quickly. Highlighted according to BCS score and weight trend.'},
       {id:'wt-marketvalue', iconHtml:'£', label:'Market Value', text:'Latest weight \u00d7 breed\u2019s £/kg that\u2019s saved in Settings. Costs are taken off this value to calculate the profit (purchase price and medicine given). This tile is coloured green if in profit, red if purchase + medicine given is more than current market value, grey if never weighed.'},
       {id:'wt-health', icon:'heart', label:'Health', text:'Overall health score based on several factors and highlighted accordingly.'},
@@ -3810,7 +3815,7 @@ const WALKTHROUGH_STEPS=[
       {id:'wt-bulkweigh', icon:'scale', label:'Weigh / BCS', text:'From the Home page select the Weigh/BCS tile. Scan or select an animal. The last previous values will display. Enter the BCS and/or weight and click Go on the keypad, or save in the footer. A green tick will display against any animal already weighed that day. Select another animal to repeat.'},
       {id:'wt-bulkmed', icon:'syringe', label:'Medicine', text:'After recording the medicine given to an animal there is the option to apply the same medicine to another animal. Scan or select the next animal from the list. Amend the dose and cost as required.\n\nWARNING: Estimates on the dosage are based on the animal\u2019s last weight. You must consult a vet for accurate dosage and withdrawal periods'},
       {sectionHeader:'Other farm actions', badge:4},
-      {id:'wt-damage', icon:'barn', label:'Farm damage', text:'Record any repairs needed and grade the urgency. Taking a photo and saving the GPS help find it later and understand what needs to be done. Tick off damages as they are repaired. Highlighted according to outstanding damage severity.'},
+      {id:'wt-damage', icon:'barn', label:'Farm damage', text:'Record any repairs needed and grade the urgency. Taking a photo and saving the GPS help find it later and understand what needs to be done. Tick off damages as they are repaired. Highlighted according to outstanding damage severity.\n\nSwitch to Improvement when adding a record to log positive changes instead \u2014 useful as evidence for farming grants such as the Sustainable Farming Incentive.'},
       {id:'wt-home-fodder', iconHtml:`<span style="position:relative;display:inline-block;width:40px;height:40px;"><span style="position:absolute;left:0;top:8px;width:34px;height:34px;">${icon('grass')}</span><span style="position:absolute;right:-3px;top:0;width:20px;height:20px;">${icon('sun')}</span></span>`, label:'Fodder', text:'Record purchases against the types in Settings. Also records the quantity, cost and supplier. Summary of monthly expenditure in Reports.'},
       {sectionHeader:'Reports', badge:5},
       {id:'wt-attention', icon:'insights', label:'Attention', text:'Issues that the user needs to be aware of and remedy, such as reporting to BCMS.'},
@@ -4951,13 +4956,14 @@ function renderDamageList(){
             </div>
             <label>Details <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
             <textarea data-editdamagedetails="${d.id}" maxlength="1000" style="min-height:90px;">${escapeHtml(d.details||'')}</textarea>
+            ${d.record_type==='improvement' && d.sfi_action_code?`<div style="font-size:13px;color:var(--primary-dark);font-weight:700;margin-top:6px;">SFI action: ${escapeHtml(d.sfi_action_code)}</div>`:''}
             <div style="display:flex;gap:10px;align-items:center;justify-content:center;margin-top:10px;">
               ${photoCaptureBlockModal('damagerow'+d.id, d.photo_data)}
               <button data-viewmap="${d.id}" style="background:none;border:none;cursor:pointer;color:${d.gps?'var(--ink)':'var(--grey-light)'};width:34px;height:34px;flex-shrink:0;">${icon('pin')}</button>
             </div>
             <div style="display:flex;gap:18px;align-items:center;justify-content:center;margin-top:14px;">
-              <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:13px;color:var(--ink);"><input type="checkbox" data-fixed="${d.id}"> Fixed?</label>
-              <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:13px;color:var(--ink);"><input type="checkbox" data-notfixing="${d.id}"> Not going to fix?</label>
+              <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:13px;color:var(--ink);"><input type="checkbox" data-fixed="${d.id}"> ${d.record_type==='improvement'?'Completed?':'Fixed?'}</label>
+              <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:13px;color:var(--ink);"><input type="checkbox" data-notfixing="${d.id}"> ${d.record_type==='improvement'?'Not going to do?':'Not going to fix?'}</label>
             </div>
           </div>`:''}
         </div>`;
@@ -4970,7 +4976,8 @@ function renderDamageList(){
         ${!isOnline? `<div style="font-size:13px;color:var(--grey);padding:6px 2px;">Only outstanding fixes are held locally on this device. Go online to view previous damages.</div>` : `
           ${past.length? past.map(d=>{
             const isOpen=expandedDamageHistoryId===d.id;
-            const statusLabel = d.fixed_at ? 'Fixed '+fmtShortDate(d.fixed_at) : 'Not going to fix';
+            const isImprovement = d.record_type==='improvement';
+            const statusLabel = d.fixed_at ? (isImprovement?'Completed ':'Fixed ')+fmtShortDate(d.fixed_at) : (isImprovement?'Not going to do':'Not going to fix');
             return `
             <div style="margin:6px 0;">
               <button class="damagebar" data-toggledamagehist="${d.id}" style="background:var(--grey);font-size:14.5px;padding:8px 12px;">
@@ -4985,6 +4992,7 @@ function renderDamageList(){
                 <label>Details</label>
                 <textarea readonly data-viewdetails="${d.id}" style="background:#f3f3f3;color:var(--ink);cursor:pointer;">${escapeHtml(d.details)}</textarea>
                 `:''}
+                ${isImprovement && d.sfi_action_code?`<div style="font-size:13px;color:var(--primary-dark);font-weight:700;margin-top:6px;">SFI action: ${escapeHtml(d.sfi_action_code)}</div>`:''}
                 <div style="display:flex;gap:10px;align-items:center;justify-content:center;margin-top:10px;">
                   <button data-viewphoto="${d.id}" style="background:${d.photo_data?'#fff':'#e8e8e8'};border:1px solid var(--line);border-radius:8px;width:72px;height:72px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;overflow:hidden;">
                     ${d.photo_data?`<img src="${d.photo_data}" data-photo-fallback-key="${escapeHtml(d.photo_data)}" onerror="handlePhotoError(this)" style="width:100%;height:100%;object-fit:cover;">`:`<span style="width:30px;height:30px;color:var(--grey-light);">${icon('camera')}</span>`}
@@ -5013,6 +5021,12 @@ function renderDamageAdd(){
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Add Farm Damage</span><span></span></div>
     <div class="body bigtext">
+      <div class="formrow"><label>Type</label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="damageTypeRadio" id="damageTypeDamage" ${damageTypePick==='damage'?'checked':''}> Damage</label>
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="damageTypeRadio" id="damageTypeImprovement" ${damageTypePick==='improvement'?'checked':''}> Improvement</label>
+      </div></div>
+      <div id="damageImprovementLabel" style="text-align:center;font-size:13px;font-weight:700;color:var(--primary-dark);margin:4px 0 10px;display:${damageTypePick==='improvement'?'block':'none'};">Record improvements for future farming grants</div>
+
       ${photoCaptureBlockModal('damagephoto', damagePhotoTemp, 'Click to take photo of damage')}
 
       <label>GPS</label>
@@ -5041,6 +5055,13 @@ function renderDamageAdd(){
       <label style="margin-top:14px;">Details <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       <textarea id="damageDetails" maxlength="1000" style="min-height:38px;overflow:hidden;resize:none;" oninput="document.getElementById('damageCharCount').textContent=(1000-this.value.length)+' characters remaining'"></textarea>
       <div id="damageCharCount" style="font-size:13px;color:var(--grey);text-align:right;margin-top:2px;">1000 characters remaining</div>
+
+      <div id="damageSfiCodeBlock" style="display:${damageTypePick==='improvement'?'block':'none'};">
+        <label style="margin-top:14px;">SFI action code <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
+        <input type="text" id="damageSfiCode" list="damageSfiCodeList" placeholder="e.g. CLIG3" maxlength="20" value="${damageSfiCodeVal.replace(/"/g,'&quot;')}" style="text-transform:uppercase;">
+        <datalist id="damageSfiCodeList">${[...new Set(damageRecords.map(d=>d.sfi_action_code).filter(Boolean))].sort().map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+        <div style="font-size:12px;color:var(--grey);margin-top:2px;">Tag this with the SFI action it's evidence for, if it's part of an agreement (e.g. CHRW2 for hedgerow work).</div>
+      </div>
     </div>
     ${footerBar([
       {id:'damageadd-help', icon:'help', label:'Help'},
@@ -5055,7 +5076,7 @@ function renderDamageAdd(){
 // doesn't require leaving the screen and finding the record again in the
 // expanded history the way it used to.
 function bcmsCheckboxRow(rec){
-  if(!rec) return '';
+  if(!rec || rec.direction==='in') return ''; // on-farm field moves don't need a BCMS report row
   const rowSt=moveReportStatus(rec);
   const isReported=rec.bcms_reported;
   const label = isReported ? 'Reported to '+bcmsLink()+(rec.bcms_reported_at?' on '+fmtDate(rec.bcms_reported_at):'')
@@ -5086,17 +5107,19 @@ function renderMove(){
       <div class="formrow"><label>On/off farm?</label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
         <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="moveDirectionRadio" id="moveDirectionOn" ${moveDirection==='on'?'checked':''}> On</label>
         <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="moveDirectionRadio" id="moveDirectionOff" ${moveDirection==='off'?'checked':''}> Off</label>
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="moveDirectionRadio" id="moveDirectionIn" ${moveDirection==='in'?'checked':''}> In</label>
       </div></div>
 
-      ${(moveDirection==='on'||moveDirection==='off')?`
-      <div class="formrow"><label>${moveDirection==='on'?'From':'Destination'}</label><div class="formctrl">
-        <input type="text" id="moveLocation" list="moveLocationList" placeholder="e.g. Buxton Market" value="${moveLocationVal.replace(/"/g,'&quot;')}">
+      ${(moveDirection==='on'||moveDirection==='off'||moveDirection==='in')?`
+      <div class="formrow"><label>${moveDirection==='on'?'From':moveDirection==='off'?'Destination':'To'}</label><div class="formctrl">
+        <input type="text" id="moveLocation" list="moveLocationList" placeholder="${moveDirection==='in'?'e.g. North Field':'e.g. Buxton Market'}" value="${moveLocationVal.replace(/"/g,'&quot;')}">
       </div></div>
-      <datalist id="moveLocationList">${[...new Set(moveRecords.map(r=>r.location).filter(Boolean))].sort().map(l=>`<option value="${escapeHtml(l)}">`).join('')}</datalist>
+      <datalist id="moveLocationList">${[...new Set(moveRecords.filter(r=>r.direction===moveDirection).map(r=>r.location).filter(Boolean))].sort().map(l=>`<option value="${escapeHtml(l)}">`).join('')}</datalist>
 
+      ${moveDirection!=='in'?`
       <div class="formrow"><label>${moveDirection==='on'?'From CPH':'Destination CPH'}</label><div class="formctrl">
         <input type="text" inputmode="numeric" id="moveDestCph" maxlength="11" placeholder="e.g. 12/345/6789" value="${moveDestCphVal.replace(/"/g,'&quot;')}">
-      </div></div>`:''}
+      </div></div>`:''}`:''}
 
       <label style="margin-top:16px;display:none;">Reason (optional)</label>
       <textarea id="moveReason" maxlength="500" style="min-height:90px;display:none;" oninput="document.getElementById('moveCharCount').textContent=(500-this.value.length)+' characters remaining'">${moveReasonVal}</textarea>
@@ -5109,13 +5132,14 @@ function renderMove(){
         // possible to pick an animal before Direction/Location are set
         // (commitMoveEntry silently declines to save until both exist), so
         // checking chosen.length alone could leave neither message showing.
+        if(activeRec && activeRec.direction==='in') return `<div style="font-size:13px;color:var(--primary-dark);text-align:center;margin-top:8px;">On-farm move \u2014 no BCMS report or TB check needed.</div>`;
         return activeRec ? bcmsCheckboxRow(activeRec) : `<div style="font-size:13px;color:var(--primary-dark);text-align:center;margin-top:8px;">Move details auto-save when an animal is added.</div>`;
       })()}
 
       <label style="margin-top:18px;">Animals</label>
-      ${chosen.some(a=>animalMoveRisk(a.id)) ? `<div class="banner" style="display:block;">Some animals are in withdrawal or missing a TB test. Move still recorded.</div>` : ''}
+      ${(moveDirection!=='in' && chosen.some(a=>animalMoveRisk(a.id))) ? `<div class="banner" style="display:block;">Some animals are in withdrawal or missing a TB test. Move still recorded.</div>` : ''}
       ${chosen.length? chosen.map(a=>{
-        const risky = animalMoveRisk(a.id);
+        const risky = moveDirection!=='in' && animalMoveRisk(a.id);
         return `
         <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
           <div style="position:relative;flex:1;">
@@ -5145,7 +5169,7 @@ function renderMove(){
               <button class="damagebar" data-togglemovehist="${r.id}" style="background:${(rowSt||isStandstillCause)?'var(--red)':'var(--grey)'};font-size:14.5px;padding:8px 12px;">
                 <span>${fmtShortDate(r.date)}${r.location?' '+escapeHtml(r.location):''} (${animalsInMove.length} animal${animalsInMove.length===1?'':'s'})</span>
                 <span style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
-                  ${r.direction?`<span style="width:24px;height:24px;flex-shrink:0;" title="${r.direction==='off'?'Off farm':'On farm'}">${icon(r.direction==='off'?'exportBox':'importBox')}</span>`:''}
+                  ${r.direction?`<span style="width:24px;height:24px;flex-shrink:0;" title="${r.direction==='off'?'Off farm':r.direction==='on'?'On farm':'On-farm move'}">${icon(r.direction==='off'?'exportBox':r.direction==='on'?'importBox':'walking')}</span>`:''}
                   <span style="width:20px;height:20px;flex-shrink:0;">${icon(isOpen?'triangleDown':'triangleRight')}</span>
                 </span>
               </button>
@@ -6011,7 +6035,7 @@ async function commitMoveEntry(){
   const location = moveLocationVal.trim();
   const destCph = moveDestCphVal.trim();
   if(!location || moveAnimalIds.length===0 || !moveDirection) return; // not enough to save yet — no error shown, just don't persist
-  if(!destCph) return; // origin/destination CPH required for both directions before we persist
+  if(moveDirection!=='in' && !destCph) return; // origin/destination CPH required for on/off farm moves; not needed for an on-farm field move
   const reason = moveReasonVal.trim();
   const recordedIso = moveDate===todayStr() ? new Date().toISOString() : new Date(moveDate+'T12:00:00').toISOString();
 
@@ -6020,10 +6044,10 @@ async function commitMoveEntry(){
   if(rec){
     rec.date=moveDate; rec.location=location||null; rec.reason=reason||null;
     rec.animal_ids=[...moveAnimalIds]; rec.created_at=recordedIso; rec.direction=moveDirection;
-    rec.dest_cph = destCph||null; rec.farmer_id = currentFarmerId;
+    rec.dest_cph = moveDirection==='in' ? null : (destCph||null); rec.farmer_id = currentFarmerId;
   } else {
     rec={id:uuid(), date:moveDate, location:location||null, reason:reason||null, animal_ids:[...moveAnimalIds], created_at:recordedIso, direction:moveDirection,
-      dest_cph: destCph||null, bcms_reported:false, farmer_id:currentFarmerId};
+      dest_cph: moveDirection==='in' ? null : (destCph||null), bcms_reported:false, farmer_id:currentFarmerId};
     moveRecords.push(rec);
   }
   moveSessionRecordId=rec.id;
@@ -10360,6 +10384,7 @@ Rules:
     document.getElementById('moveDateInput').onchange=(e)=>{ moveDate=e.target.value; commitMoveEntry().then(isNew=>{ render(); if(isNew!==undefined) showSaveToast('Date set to '+fmtDate(moveDate)); }); };
     document.getElementById('moveDirectionOn').onchange=()=>{ moveDirection='on'; commitMoveEntry().then(isNew=>{ render(); if(isNew!==undefined) showSaveToast('Move set to On farm'); }); };
     document.getElementById('moveDirectionOff').onchange=()=>{ moveDirection='off'; commitMoveEntry().then(isNew=>{ render(); if(isNew!==undefined) showSaveToast('Move set to Off farm'); }); };
+    document.getElementById('moveDirectionIn').onchange=()=>{ moveDirection='in'; commitMoveEntry().then(isNew=>{ render(); if(isNew!==undefined) showSaveToast('Move set to In farm'); }); };
     const moveLocationEl=document.getElementById('moveLocation');
     if(moveLocationEl) moveLocationEl.onchange=(e)=>{
       moveLocationVal=e.target.value;
@@ -10466,7 +10491,9 @@ Rules:
       moveSessionRecordId=null;
       moveDate=todayStr();
       moveGps=null;
-      moveDirection = rec.direction==='off' ? 'on' : 'off';
+      // An on-farm ('in') move returns as another on-farm move; on/off
+      // farm moves flip to their opposite direction, same as before.
+      moveDirection = rec.direction==='off' ? 'on' : rec.direction==='on' ? 'off' : 'in';
       moveLocationVal = rec.location || '';
       moveDestCphVal = rec.dest_cph || '';
       moveReasonVal='';
@@ -10476,7 +10503,7 @@ Rules:
       moveWarningsSuppressed=false;
       await commitMoveEntry();
       render();
-      queueMoveRiskWarnings(moveAnimalIds);
+      if(moveDirection!=='in') queueMoveRiskWarnings(moveAnimalIds);
       if(modal) renderModal();
       const bodyEl=document.querySelector('.body');
       if(bodyEl) bodyEl.scrollTop=0;
@@ -10498,16 +10525,18 @@ Rules:
         render();
       }
     });
-    document.getElementById('move-help').onclick=()=>{ showInfoModal('\u2022 Select on/off farm and location before adding animals.\n\n\u2022 On farm will trigger 7 day standstill.\n\n\u2022 Off farm shows a red syringe against any animal in medicine withdrawal or missing a TB test.\n\n\u2022 Add the animals to move, either select from the list or scan EID tags.\n\n\u2022 Expand previous to see on farm moves which triggered current standstill.\n\n\u2022 Email will send the details of the move that is currently expanded.'); };
+    document.getElementById('move-help').onclick=()=>{ showInfoModal('\u2022 Select On, Off, or In before adding animals.\n\n\u2022 On \u2014 the animal is entering the farm from elsewhere. Enter the origin holding\u2019s CPH. Triggers a 7 day standstill and TB testing rules.\n\n\u2022 Off \u2014 the animal is leaving the farm. Enter the destination holding\u2019s CPH. Also triggers TB testing rules. The origin recorded is the farm as a whole, not a specific field.\n\n\u2022 In \u2014 the animal is moving between fields on the farm. No CPH is needed, and no TB check or standstill is triggered. Select the destination field in \u201cTo\u201d \u2014 new field names are saved and offered for future In moves.\n\n\u2022 Off and On moves show a red syringe against any animal in medicine withdrawal or missing a TB test.\n\n\u2022 Add the animals to move, either select from the list or scan EID tags.\n\n\u2022 Expand previous to see on farm moves which triggered current standstill.\n\n\u2022 Email will send the details of the move that is currently expanded.'); };
     document.getElementById('move-tag').onclick=()=>{
       const errEl=document.getElementById('err-movevalidation');
       if(!moveDirection){
-        errEl.textContent='Choose on or off farm before adding an animal.';
+        errEl.textContent='Choose on, off, or in farm before adding an animal.';
         return;
       }
       const liveLocation=document.getElementById('moveLocation').value.trim();
       if(!liveLocation){
-        errEl.textContent=(moveDirection==='on'?'Enter a from location':'Enter a destination')+' before adding an animal.';
+        errEl.textContent = moveDirection==='on' ? 'Enter a from location before adding an animal.'
+          : moveDirection==='off' ? 'Enter a destination before adding an animal.'
+          : 'Enter a field before adding an animal.';
         return;
       }
       if(moveDirection==='on' || moveDirection==='off'){
@@ -10536,30 +10565,33 @@ Rules:
         dateVal=moveDate; locationVal=moveLocationVal; animalIds=moveAnimalIds; directionVal=moveDirection||''; destCphVal=moveDestCphVal;
         // A half-filled move makes for a pointless email and wastes the
         // farmer's time reading/forwarding it — block rather than send it.
-        const incomplete = !directionVal || !locationVal.trim() || !destCphVal.trim() || animalIds.length===0;
+        // An on-farm ('in') move has no CPH, so it's not part of this check.
+        const incomplete = !directionVal || !locationVal.trim() || (directionVal!=='in' && !destCphVal.trim()) || animalIds.length===0;
         if(incomplete){
-          showInfoModal('Fill in on/off farm, the location, the CPH, and add at least one animal before emailing this move.');
+          showInfoModal(directionVal==='in' ? 'Fill in the field and add at least one animal before emailing this move.' : 'Fill in on/off farm, the location, the CPH, and add at least one animal before emailing this move.');
           return;
         }
       }
       const chosen=animalIds.map(id=>animals.find(a=>a.id===id)).filter(Boolean);
       const farmCph=farmSettings.cph||'(not set in Settings)';
       const fmtDDMMYYYY=(isoDateStr)=>{ const [y,m,d]=isoDateStr.split('-'); return d+'-'+m+'-'+y; };
-      const bodyLines=['Date: '+fmtDDMMYYYY(dateVal), 'On/off farm: '+(directionVal==='on'?'On':'Off')];
+      const bodyLines=['Date: '+fmtDDMMYYYY(dateVal), 'On/off/in farm: '+(directionVal==='on'?'On':directionVal==='off'?'Off':'In (on-farm field move)')];
       if(directionVal==='off'){
         bodyLines.push('Origin CPH: '+farmCph);
         bodyLines.push('Destination: '+(locationVal.trim()||'(not entered)'));
         bodyLines.push('Destination CPH: '+(destCphVal.trim()||'(not entered)'));
-      } else {
+      } else if(directionVal==='on'){
         bodyLines.push('Origin: '+(locationVal.trim()||'(not entered)'));
         bodyLines.push('Origin CPH: '+(destCphVal.trim()||'(not entered)'));
         bodyLines.push('Destination CPH: '+farmCph);
+      } else {
+        bodyLines.push('Field: '+(locationVal.trim()||'(not entered)'));
       }
       bodyLines.push('', 'Animals:');
       chosen.forEach(a=>{
         bodyLines.push((animalDisplayName(a))+' (EID: '+(a.eid||'Not set')+') '+breedName(a.breed_id)+(a.status!=='active'?' \u2014 '+(ANIMAL_STATUS_LABELS[a.status]||a.status):''));
       });
-      bodyLines.push('', 'Report this move to BCMS: '+BCMS_URL);
+      if(directionVal!=='in') bodyLines.push('', 'Report this move to BCMS: '+BCMS_URL);
       window.open('mailto:?subject='+encodeURIComponent('Animal movement record'+subjectSuffix)+'&body='+encodeURIComponent(bodyLines.join('\n')));
     };
   }
@@ -10686,15 +10718,28 @@ Rules:
       render();
       showSaveToast('Updated');
     });
-    document.getElementById('damage-help').onclick=()=>{ showInfoModal('\u2022 Record damage that needs to be fixed.\n\n\u2022 Take a photo and GPS co-ordinates to find it easily later.\n\n\u2022 Use fixed/not going to fix to remove it from the active list of damages.'); };
+    document.getElementById('damage-help').onclick=()=>{ showInfoModal('\u2022 Record damage that needs to be fixed, or switch to Improvement when adding a record to log positive changes \u2014 new hedges, ponds, fencing \u2014 as evidence for farming grants such as the Sustainable Farming Incentive.\n\n\u2022 Take a photo and GPS co-ordinates to find it easily later.\n\n\u2022 Use fixed/not going to fix (or completed/not going to do, for improvements) to remove it from the active list.'); };
     document.getElementById('damage-add').onclick=()=>{
-      damageUrgencyPick=null; damagePhotoTemp=null; damageGpsTemp=null;
+      damageUrgencyPick=null; damagePhotoTemp=null; damageGpsTemp=null; damageTypePick='damage'; damageSfiCodeVal='';
       view='damageAdd'; render();
     };
   }
   if(view==='damageAdd'){
     wireGoKeySubmit('damageadd-save');
-    document.getElementById('damageadd-help').onclick=()=>{ showInfoModal('Record any damage that needs to be fixed. Turn the devices GPS on to accurately record where the damage is.'); };
+    document.getElementById('damageadd-help').onclick=()=>{ showInfoModal('\u2022 Record any damage that needs to be fixed. Turn the device\u2019s GPS on to accurately record where the damage is.\n\n\u2022 Switch to Improvement to record positive changes to the farm \u2014 new hedges, ponds, fencing, or other land management work \u2014 instead of damage. These are timestamped and photographed the same way, so they can be used as evidence when applying for farming grants such as the Sustainable Farming Incentive. Optionally tag an improvement with the SFI action code it supports.\n\n\u2022 Mark an improvement Completed once the work is finished, or Not going to do if you decide not to proceed.'); };
+
+    document.getElementById('damageTypeDamage').onchange=()=>{
+      damageTypePick='damage';
+      document.getElementById('damageImprovementLabel').style.display='none';
+      document.getElementById('damageSfiCodeBlock').style.display='none';
+    };
+    document.getElementById('damageTypeImprovement').onchange=()=>{
+      damageTypePick='improvement';
+      document.getElementById('damageImprovementLabel').style.display='block';
+      document.getElementById('damageSfiCodeBlock').style.display='block';
+    };
+    const damageSfiCodeEl=document.getElementById('damageSfiCode');
+    if(damageSfiCodeEl) damageSfiCodeEl.oninput=()=>{ damageSfiCodeVal=damageSfiCodeEl.value; };
 
     wirePhotoCaptureModal('damagephoto', (dataUrl)=>{ damagePhotoTemp=dataUrl; updatePhotoPreview('damagephoto', dataUrl); });
     // Grows the Details box to fit whatever's actually been typed, rather
@@ -10742,16 +10787,19 @@ Rules:
       }
       const location=document.getElementById('damageLocation').value.trim();
       const details=document.getElementById('damageDetails').value.trim();
+      const sfiCodeEl=document.getElementById('damageSfiCode');
+      const sfiCode = (damageTypePick==='improvement' && sfiCodeEl) ? sfiCodeEl.value.trim().toUpperCase() : '';
       const newDamage = {
         id:uuid(), photo_data:damagePhotoTemp, gps:damageGpsTemp,
         location:location||null, summary, details:details||null,
         urgency:damageUrgencyPick, fixed_at:null, not_going_to_fix:false,
-        created_at:new Date().toISOString(), farmer_id:currentFarmerId
+        created_at:new Date().toISOString(), farmer_id:currentFarmerId,
+        record_type:damageTypePick, sfi_action_code:sfiCode||null,
       };
       damageRecords.push(newDamage);
       await persistAll();
       await syncDamageToSupabase(newDamage);
-      logMsg('Logged farm damage: &ldquo;'+escapeHtml(summary)+'&rdquo; ('+damageUrgencyPick+' urgency).');
+      logMsg('Logged farm '+(damageTypePick==='improvement'?'improvement':'damage')+': &ldquo;'+escapeHtml(summary)+'&rdquo; ('+damageUrgencyPick+' urgency).');
       view='damage'; expandedDamageId=null; render();
       showSaveToast('Saved');
     };
