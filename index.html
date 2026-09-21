@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21o';
+const APP_BUILD_VERSION = '2026-09-21p';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,13 @@ const APP_BUILD_VERSION = '2026-09-21o';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21p',
+    date: '21 Sep 2026',
+    bullets: [
+      "Camera photo rotation is fixed \u2014 confirmed working. Removed the diagnostic pop-up that showed on every photo while tracking it down."
+    ]
+  },
   {
     version: '2026-09-21o',
     date: '21 Sep 2026',
@@ -8603,60 +8610,35 @@ function renderModal(){
       closeModalOnly();
       resolve(new File([blob], 'capture.jpg', {type: blob.type||'image/jpeg'}));
     };
-    // TEMPORARY DIAGNOSTIC — two blind attempts at the rotation fix
-    // haven't worked, so rather than guess a third time, this surfaces
-    // exactly what this specific phone/browser/camera combination is
-    // actually doing at capture time (which the previous two attempts
-    // were both assuming rather than measuring). Remove once we know
-    // what's going on.
-    const captureDiagnostics=()=>{
-      const track=stream.getVideoTracks()[0];
-      const settings=(track && track.getSettings) ? track.getSettings() : {};
-      return [
-        'ImageCapture supported: '+(!!window.ImageCapture),
-        'video.videoWidth x videoHeight: '+videoEl.videoWidth+' x '+videoEl.videoHeight,
-        'track settings width x height: '+(settings.width||'?')+' x '+(settings.height||'?'),
-        'screen.orientation.type: '+(screen.orientation ? screen.orientation.type : 'n/a'),
-        'screen.orientation.angle: '+(screen.orientation ? screen.orientation.angle : 'n/a'),
-        'window.innerWidth x innerHeight: '+window.innerWidth+' x '+window.innerHeight,
-      ].join('\n');
-    };
-    const captureViaCanvas=(diag)=>{
+    // Draws the current video frame onto a canvas — the fallback path for
+    // older/unsupported browsers, or ImageCapture failing on a particular
+    // device/camera. Not the primary path any more (see takePhoto below).
+    const captureViaCanvas=()=>{
       const vw=videoEl.videoWidth||1280, vh=videoEl.videoHeight||960;
       const canvas=document.createElement('canvas');
       canvas.width=vw; canvas.height=vh;
       canvas.getContext('2d').drawImage(videoEl, 0, 0, vw, vh);
-      canvas.toBlob((blob)=>{
-        if(!blob) return;
-        if(diag) alert('DIAGNOSTIC (canvas fallback)\n\n'+diag+'\n\ncanvas: '+canvas.width+' x '+canvas.height);
-        finishWithBlob(blob);
-      }, 'image/jpeg', 0.85);
+      canvas.toBlob((blob)=>{ if(blob) finishWithBlob(blob); }, 'image/jpeg', 0.85);
     };
     const takePhoto=()=>{
       if(settled || !stream) return;
       const track=stream.getVideoTracks()[0];
-      const diag=captureDiagnostics();
       // ImageCapture.takePhoto() asks the browser's own camera pipeline
       // for a full photo directly off the track — the same pipeline a
       // native camera app uses — rather than reading whatever the <video>
-      // preview element happens to be showing. On the devices that
-      // support it (good coverage on Android Chrome; not Safari/iOS,
-      // hence the fallback), this is what actually produces a correctly-
-      // oriented photo, because it isn't relying on this page's own guess
-      // at how the phone was held.
+      // preview element happens to be showing. This is what actually
+      // produces a correctly-oriented photo regardless of how the phone
+      // is physically held (confirmed working); screen.orientation isn't
+      // available in this context on at least some phones, which is why
+      // an earlier attempt at correcting the raw video frame manually
+      // never had a signal to work from. Falls back to the canvas capture
+      // above on browsers without ImageCapture (mainly Safari/iOS) or if
+      // a particular device/camera advertises support but fails at
+      // call time.
       if(window.ImageCapture && track){
-        new ImageCapture(track).takePhoto()
-          .then((blob)=>{
-            alert('DIAGNOSTIC (ImageCapture succeeded)\n\n'+diag+'\n\nblob type: '+blob.type+'\nblob size: '+blob.size);
-            finishWithBlob(blob);
-          })
-          .catch((err)=>{ // some cameras/devices advertise support but fail at call time
-            alert('DIAGNOSTIC (ImageCapture FAILED: '+((err&&err.message)||err)+')\n\n'+diag+'\n\nFalling back to canvas capture.');
-            captureViaCanvas(diag);
-          });
+        new ImageCapture(track).takePhoto().then(finishWithBlob).catch(captureViaCanvas);
       } else {
-        alert('DIAGNOSTIC (ImageCapture not available on this browser)\n\n'+diag);
-        captureViaCanvas(diag);
+        captureViaCanvas();
       }
     };
     // Pulled out so the "Try again" button (shown on a permission denial)
