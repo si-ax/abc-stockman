@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21l';
+const APP_BUILD_VERSION = '2026-09-21m';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,14 @@ const APP_BUILD_VERSION = '2026-09-21l';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21m',
+    date: '21 Sep 2026',
+    bullets: [
+      "Camera photo rotation: the previous fix didn't actually work, so the in-app camera button now asks the browser's own camera pipeline for the photo directly, which should orient it correctly without this app having to guess.",
+      "Add Injury now asks \u201cDiscard new injury?\u201d if you tap Home or Back after adding a photo or filling in a field \u2014 matching how Add Farm Damage and the other add screens already worked. This was simply missed when injury was built."
+    ]
+  },
   {
     version: '2026-09-21l',
     date: '21 Sep 2026',
@@ -3145,6 +3153,17 @@ function hasUnsavedDamageAddData(){
   if(val('damageDetails')) return true;
   return false;
 }
+function hasUnsavedInjuryAddData(){
+  if(view!=='injuryAdd') return false;
+  if(injAddPhoto) return true;
+  const val=(id)=>{ const el=document.getElementById(id); return el ? el.value.trim() : ''; };
+  if(val('inj-bodypart')) return true;
+  if(val('inj-level')) return true;
+  if(val('inj-notes')) return true;
+  const chk=(id)=>{ const el=document.getElementById(id); return el ? el.checked : false; };
+  if(chk('chk-bleeding') || chk('chk-weightbearing') || chk('chk-hot')) return true;
+  return false;
+}
 async function goBackContinue(){
   if(view==='move') await commitMoveEntry();
   modal=null; showFilterModal=false;
@@ -3200,6 +3219,10 @@ function goBack(){
   }
   if(hasUnsavedDamageAddData()){
     showConfirmModal('Discard new farm damage?', goBackContinue);
+    return;
+  }
+  if(hasUnsavedInjuryAddData()){
+    showConfirmModal('Discard new injury?', goBackContinue);
     return;
   }
   if(hasUnsavedWeighChanges()){
@@ -8544,40 +8567,48 @@ function renderModal(){
       closeModalOnly();
       reject(new Error('cancelled'));
     };
-    const takePhoto=()=>{
-      if(settled || !stream) return;
+    const finishWithBlob=(blob)=>{
+      if(settled) return;
+      settled=true;
+      stopStream();
+      closeModalOnly();
+      resolve(new File([blob], 'capture.jpg', {type: blob.type||'image/jpeg'}));
+    };
+    // Draws the current video frame onto a canvas — this is the fallback
+    // path (older/unsupported browsers, or ImageCapture failing on this
+    // particular device/camera), not the primary one any more. Baking a
+    // rotation on here based on screen.orientation.angle turned out not
+    // to reliably fix the sideways-photo problem in practice — this exact
+    // area (raw getUserMedia frame vs. physical device rotation) is known
+    // to be inconsistent across Android/iOS and browser/device
+    // combinations, and evidently this device's video buffer doesn't
+    // relate to that angle the way this assumed. Left un-rotated rather
+    // than guessing again blind; ImageCapture below is the real fix.
+    const captureViaCanvas=()=>{
       const vw=videoEl.videoWidth||1280, vh=videoEl.videoHeight||960;
       const canvas=document.createElement('canvas');
-      const ctx=canvas.getContext('2d');
-      // Mobile camera sensors are physically landscape, and getUserMedia
-      // hands back frames in that fixed native buffer orientation no
-      // matter how the phone is actually being held — only the on-screen
-      // preview gets auto-rotated for display, not this raw pixel data.
-      // Without correcting for it here, turning the phone to landscape
-      // for a wider shot (e.g. of an injury) produces a photo that's 90°
-      // off once viewed later held normally in portrait.
-      // screen.orientation.angle at the moment of capture is the best
-      // available signal for how the phone was actually held. This exact
-      // area (raw getUserMedia frame vs. physical device rotation) is
-      // known to be inconsistent across Android/iOS and browser/device
-      // combinations — if photos still come out rotated the WRONG way on
-      // a given phone, swap the 90/270 cases below.
-      const angle=(screen.orientation && typeof screen.orientation.angle==='number') ? screen.orientation.angle : 0;
-      if(angle===90 || angle===270){ canvas.width=vh; canvas.height=vw; }
-      else { canvas.width=vw; canvas.height=vh; }
-      ctx.save();
-      if(angle===90){ ctx.translate(canvas.width,0); ctx.rotate(Math.PI/2); }
-      else if(angle===270){ ctx.translate(0,canvas.height); ctx.rotate(-Math.PI/2); }
-      else if(angle===180){ ctx.translate(canvas.width,canvas.height); ctx.rotate(Math.PI); }
-      ctx.drawImage(videoEl, 0, 0, vw, vh);
-      ctx.restore();
-      canvas.toBlob((blob)=>{
-        if(settled) return;
-        settled=true;
-        stopStream();
-        closeModalOnly();
-        resolve(new File([blob], 'capture.jpg', {type:'image/jpeg'}));
-      }, 'image/jpeg', 0.85);
+      canvas.width=vw; canvas.height=vh;
+      canvas.getContext('2d').drawImage(videoEl, 0, 0, vw, vh);
+      canvas.toBlob((blob)=>{ if(blob) finishWithBlob(blob); }, 'image/jpeg', 0.85);
+    };
+    const takePhoto=()=>{
+      if(settled || !stream) return;
+      const track=stream.getVideoTracks()[0];
+      // ImageCapture.takePhoto() asks the browser's own camera pipeline
+      // for a full photo directly off the track — the same pipeline a
+      // native camera app uses — rather than reading whatever the <video>
+      // preview element happens to be showing. On the devices that
+      // support it (good coverage on Android Chrome; not Safari/iOS,
+      // hence the fallback), this is what actually produces a correctly-
+      // oriented photo, because it isn't relying on this page's own guess
+      // at how the phone was held.
+      if(window.ImageCapture && track){
+        new ImageCapture(track).takePhoto()
+          .then(finishWithBlob)
+          .catch(captureViaCanvas); // some cameras/devices advertise support but fail at call time
+      } else {
+        captureViaCanvas();
+      }
     };
     // Pulled out so the "Try again" button (shown on a permission denial)
     // can re-run exactly this, rather than needing the whole modal
@@ -9120,6 +9151,10 @@ function wireView(){
     }
     if(hasUnsavedDamageAddData()){
       showConfirmModal('Discard new farm damage?', goHomeContinue);
+      return;
+    }
+    if(hasUnsavedInjuryAddData()){
+      showConfirmModal('Discard new injury?', goHomeContinue);
       return;
     }
     if(hasUnsavedWeighChanges()){
