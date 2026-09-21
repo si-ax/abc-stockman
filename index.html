@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<title>ABC Stockman — Phase 1</title>
+<title>aBC Stockman</title>
 <link rel="manifest" href="./manifest.json">
 <meta name="theme-color" content="#1A8A4A">
 <link rel="icon" href="./icon-192.png">
@@ -191,7 +191,7 @@
   .event .ereason{font-size:12px;color:var(--grey);margin-top:2px;font-style:italic;}
 
   .modal-backdrop{position:absolute;inset:0;background:rgba(17,17,17,.5);display:flex;align-items:flex-end;z-index:5;}
-  .modal{background:#fff;width:100%;border-radius:16px 16px 0 0;padding:16px 16px 20px;}
+  .modal{background:#fff;width:100%;border-radius:16px 16px 0 0;padding:16px 16px 20px;max-height:80vh;overflow-y:auto;}
   /* Camera capture breaks out of the app's normal portrait phone-frame
      entirely (position:fixed escapes it — .phone/#screen have no
      transform set, so this isn't trapped inside their bounds) and fills
@@ -263,7 +263,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>aBC Stockman — pilot build</h1>
+    <h1>aBC Stockman</h1>
     <p>Animals and weigh/BCS entries now sync to the shared farm database. Feed, medicine, injuries, damage, and moves still run on local device storage for now, as this migrates one piece at a time.</p>
   </div>
 
@@ -10484,18 +10484,18 @@ Rules:
     document.querySelectorAll('[data-returnanimals]').forEach(el=>el.onclick=async()=>{
       const rec=moveRecords.find(r=>r.id===el.dataset.returnanimals);
       if(!rec) return;
-      // The location/CPH values carry straight across — only the direction
-      // flips. What was the destination (off) or origin (on) on the way
-      // out is exactly the origin/destination on the way back, so the same
-      // two fields just get reinterpreted under the new direction.
+      // The location/CPH values carry straight across for on/off moves —
+      // only the direction flips. For an on-farm ('in') move there's no
+      // tracked "from" field, so leave "To" blank and make the farmer
+      // enter the field they're actually returning the animals to.
       moveSessionRecordId=null;
       moveDate=todayStr();
       moveGps=null;
       // An on-farm ('in') move returns as another on-farm move; on/off
       // farm moves flip to their opposite direction, same as before.
       moveDirection = rec.direction==='off' ? 'on' : rec.direction==='on' ? 'off' : 'in';
-      moveLocationVal = rec.location || '';
-      moveDestCphVal = rec.dest_cph || '';
+      moveLocationVal = rec.direction==='in' ? '' : (rec.location || '');
+      moveDestCphVal = rec.direction==='in' ? '' : (rec.dest_cph || '');
       moveReasonVal='';
       moveAnimalIds=[...rec.animal_ids];
       moveHistoryExpanded=false;
