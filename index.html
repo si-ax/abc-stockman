@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21h';
+const APP_BUILD_VERSION = '2026-09-21j';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,20 @@ const APP_BUILD_VERSION = '2026-09-21h';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21j',
+    date: '21 Sep 2026',
+    bullets: [
+      "Photo zoom wasn't actually responding to pinch/pan on your phone in the last build \u2014 rebuilt it on a more reliable touch-tracking approach (Pointer Events with explicit finger tracking, instead of raw touch events)."
+    ]
+  },
+  {
+    version: '2026-09-21i',
+    date: '21 Sep 2026',
+    bullets: [
+      "Photo zoom: stopped the \u201cswipe right to go back\u201d gesture from firing while panning around inside a zoomed photo \u2014 it could previously slam the photo shut mid-drag."
+    ]
+  },
   {
     version: '2026-09-21h',
     date: '21 Sep 2026',
@@ -8211,14 +8225,18 @@ function renderModal(){
     // viewport — deliberately not touching the page's own viewport meta
     // tag (maximum-scale=1 is set globally so normal screens don't zoom
     // by accident), so this is its own small touch-handling layer rather
-    // than the browser's native pinch behaviour.
+    // than the browser's native pinch behaviour. Uses the Pointer Events
+    // API (not raw touch events) with explicit pointer capture — more
+    // reliable at tracking two fingers through a full gesture across
+    // different Android/Chrome builds than touchstart/move/end, which can
+    // silently lose track of a finger that drifts off the element.
     const viewport=document.getElementById('imgZoomViewport');
     const img=document.getElementById('imgZoomTarget');
     if(viewport && img){
       let scale=1, tx=0, ty=0;
-      let startDist=0, startScale=1;
-      let startTx=0, startTy=0, startX=0, startY=0;
-      let panPointerId=null;
+      const pointers=new Map(); // active pointerId -> last {x,y}
+      let pinchStartDist=0, pinchStartScale=1;
+      let panStart=null; // {id, x, y, tx, ty}
       let lastTapTime=0, lastTapX=0, lastTapY=0;
       const MIN_SCALE=1, MAX_SCALE=4, DOUBLE_TAP_ZOOM=2.5;
 
@@ -8229,64 +8247,67 @@ function renderModal(){
       // enough to not feel restrictive while stopping the image being
       // dragged entirely out of view.
       const clampPan=()=>{
-        const maxOffsetX = (viewport.clientWidth*(scale-1))/2 + viewport.clientWidth*0.15;
-        const maxOffsetY = (viewport.clientHeight*(scale-1))/2 + viewport.clientHeight*0.15;
+        const maxOffsetX=(viewport.clientWidth*(scale-1))/2 + viewport.clientWidth*0.15;
+        const maxOffsetY=(viewport.clientHeight*(scale-1))/2 + viewport.clientHeight*0.15;
         tx=Math.max(-maxOffsetX, Math.min(maxOffsetX, tx));
         ty=Math.max(-maxOffsetY, Math.min(maxOffsetY, ty));
       };
-      const touchDist=(t0,t1)=>Math.hypot(t1.clientX-t0.clientX, t1.clientY-t0.clientY);
+      const dist=(a,b)=>Math.hypot(a.x-b.x, a.y-b.y);
       const toggleZoom=()=>{
         if(scale>1){ scale=1; tx=0; ty=0; } else { scale=DOUBLE_TAP_ZOOM; tx=0; ty=0; }
         apply();
       };
 
-      viewport.addEventListener('touchstart', (e)=>{
-        if(e.touches.length===2){
-          e.preventDefault();
-          startDist=touchDist(e.touches[0], e.touches[1]);
-          startScale=scale;
-          panPointerId=null; // pinch takes over from any single-finger pan in progress
-        } else if(e.touches.length===1){
-          const now=Date.now(), t=e.touches[0];
-          if(now-lastTapTime<350 && Math.hypot(t.clientX-lastTapX, t.clientY-lastTapY)<30){
-            e.preventDefault();
+      viewport.addEventListener('pointerdown', (e)=>{
+        e.stopPropagation(); // never let this reach the phone frame's swipe-to-back listener
+        viewport.setPointerCapture(e.pointerId); // keep receiving move/up for this finger even if it drifts outside the box
+        pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+        if(pointers.size===1){
+          const now=Date.now();
+          if(now-lastTapTime<350 && Math.hypot(e.clientX-lastTapX, e.clientY-lastTapY)<30){
             toggleZoom();
             lastTapTime=0; // consumed — don't chain into a false triple-tap
+            pointers.clear();
             return;
           }
-          lastTapTime=now; lastTapX=t.clientX; lastTapY=t.clientY;
-          if(scale>1){
-            panPointerId=t.identifier;
-            startX=t.clientX; startY=t.clientY; startTx=tx; startTy=ty;
-          }
+          lastTapTime=now; lastTapX=e.clientX; lastTapY=e.clientY;
+          if(scale>1) panStart={id:e.pointerId, x:e.clientX, y:e.clientY, tx, ty};
+        } else if(pointers.size===2){
+          panStart=null; // pinch takes over from any single-finger pan in progress
+          const pts=[...pointers.values()];
+          pinchStartDist=dist(pts[0], pts[1]);
+          pinchStartScale=scale;
         }
-      }, {passive:false});
+      });
 
-      viewport.addEventListener('touchmove', (e)=>{
-        if(e.touches.length===2 && startDist>0){
+      viewport.addEventListener('pointermove', (e)=>{
+        if(!pointers.has(e.pointerId)) return;
+        e.stopPropagation();
+        pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+        if(pointers.size===2 && pinchStartDist>0){
           e.preventDefault();
-          scale=Math.max(MIN_SCALE, Math.min(MAX_SCALE, startScale*(touchDist(e.touches[0],e.touches[1])/startDist)));
+          const pts=[...pointers.values()];
+          scale=Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinchStartScale*(dist(pts[0],pts[1])/pinchStartDist)));
           clampPan();
           apply();
-        } else if(e.touches.length===1 && panPointerId!==null && scale>1){
-          const t=[...e.touches].find(x=>x.identifier===panPointerId);
-          if(t){
-            e.preventDefault();
-            tx=startTx+(t.clientX-startX);
-            ty=startTy+(t.clientY-startY);
-            clampPan();
-            apply();
-          }
+        } else if(pointers.size===1 && panStart && panStart.id===e.pointerId && scale>1){
+          e.preventDefault();
+          tx=panStart.tx+(e.clientX-panStart.x);
+          ty=panStart.ty+(e.clientY-panStart.y);
+          clampPan();
+          apply();
         }
-      }, {passive:false});
+      });
 
-      const endTouch=()=>{
-        startDist=0;
-        panPointerId=null;
-        if(scale<=1){ scale=1; tx=0; ty=0; apply(); }
+      const endPointer=(e)=>{
+        e.stopPropagation();
+        pointers.delete(e.pointerId);
+        if(panStart && panStart.id===e.pointerId) panStart=null;
+        if(pointers.size<2) pinchStartDist=0;
+        if(pointers.size===0 && scale<=1){ scale=1; tx=0; ty=0; apply(); }
       };
-      viewport.addEventListener('touchend', endTouch);
-      viewport.addEventListener('touchcancel', endTouch);
+      viewport.addEventListener('pointerup', endPointer);
+      viewport.addEventListener('pointercancel', endPointer);
 
       // Desktop convenience — double-click mirrors double-tap.
       img.addEventListener('dblclick', toggleZoom);
