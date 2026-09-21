@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21k';
+const APP_BUILD_VERSION = '2026-09-21l';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,13 @@ const APP_BUILD_VERSION = '2026-09-21k';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21l',
+    date: '21 Sep 2026',
+    bullets: [
+      "Fixed photos coming out sideways when taken with the in-app camera button while the phone was turned to landscape \u2014 the captured photo now corrects for how the phone was actually held. (Doesn't affect photos added via \u201cSelect photo\u201d, which weren't affected by this.)"
+    ]
+  },
   {
     version: '2026-09-21k',
     date: '21 Sep 2026',
@@ -8539,10 +8546,31 @@ function renderModal(){
     };
     const takePhoto=()=>{
       if(settled || !stream) return;
+      const vw=videoEl.videoWidth||1280, vh=videoEl.videoHeight||960;
       const canvas=document.createElement('canvas');
-      canvas.width=videoEl.videoWidth||1280;
-      canvas.height=videoEl.videoHeight||960;
-      canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+      const ctx=canvas.getContext('2d');
+      // Mobile camera sensors are physically landscape, and getUserMedia
+      // hands back frames in that fixed native buffer orientation no
+      // matter how the phone is actually being held — only the on-screen
+      // preview gets auto-rotated for display, not this raw pixel data.
+      // Without correcting for it here, turning the phone to landscape
+      // for a wider shot (e.g. of an injury) produces a photo that's 90°
+      // off once viewed later held normally in portrait.
+      // screen.orientation.angle at the moment of capture is the best
+      // available signal for how the phone was actually held. This exact
+      // area (raw getUserMedia frame vs. physical device rotation) is
+      // known to be inconsistent across Android/iOS and browser/device
+      // combinations — if photos still come out rotated the WRONG way on
+      // a given phone, swap the 90/270 cases below.
+      const angle=(screen.orientation && typeof screen.orientation.angle==='number') ? screen.orientation.angle : 0;
+      if(angle===90 || angle===270){ canvas.width=vh; canvas.height=vw; }
+      else { canvas.width=vw; canvas.height=vh; }
+      ctx.save();
+      if(angle===90){ ctx.translate(canvas.width,0); ctx.rotate(Math.PI/2); }
+      else if(angle===270){ ctx.translate(0,canvas.height); ctx.rotate(-Math.PI/2); }
+      else if(angle===180){ ctx.translate(canvas.width,canvas.height); ctx.rotate(Math.PI); }
+      ctx.drawImage(videoEl, 0, 0, vw, vh);
+      ctx.restore();
       canvas.toBlob((blob)=>{
         if(settled) return;
         settled=true;
