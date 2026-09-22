@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21p';
+const APP_BUILD_VERSION = '2026-09-21q';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,13 @@ const APP_BUILD_VERSION = '2026-09-21p';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-21q',
+    date: '21 Sep 2026',
+    bullets: [
+      "Fixed the app jumping back to Home unprompted \u2014 right after opening, and again later at random while using it. A background auth check was treating every routine session refresh as a reason to navigate home, even mid-task. It still refreshes your data the same as before, it just no longer yanks you off whatever screen you're on to do it."
+    ]
+  },
   {
     version: '2026-09-21p',
     date: '21 Sep 2026',
@@ -12002,13 +12009,30 @@ Rules:
     authUser=session.user;
     await resolveFarmMembership();
   }
+  // Views that mean "the app hasn't finished booting into normal use
+  // yet" — auth/farm-pairing screens only. Once the farmer is on any
+  // real screen (Home included), this listener firing again (which it
+  // does for routine background events — an initial re-validation
+  // shortly after boot, and again every time the session token silently
+  // refreshes) should never touch navigation. It used to jump straight
+  // back to Home every single time, regardless of what screen the farmer
+  // was actually on — sometimes within a second of tapping into one.
+  const PRE_APP_VIEWS=new Set(['bootLoading','login','supaWaiting','supaLogin']);
   sb.auth.onAuthStateChange(async(_event, newSession)=>{
     authUser = newSession ? newSession.user : null;
     if(authUser){
       await resolveFarmMembership();
-      if(authFarmId && deviceFarmCode) goHomeRespectingBootMinimum();
-      else { view = authFarmId ? 'login' : 'supaWaiting'; render(); }
+      if(PRE_APP_VIEWS.has(view)){
+        if(authFarmId && deviceFarmCode) goHomeRespectingBootMinimum();
+        else { view = authFarmId ? 'login' : 'supaWaiting'; render(); }
+      }
+      // else: already in normal use — just keep authUser/authFarmId
+      // current in the background, silently, and leave the farmer
+      // wherever they are.
     } else {
+      // A genuinely lost/expired session is different — nothing else in
+      // the app works without one, so this one still applies regardless
+      // of current screen.
       authFarmId=null; view='supaLogin'; render();
     }
   });
