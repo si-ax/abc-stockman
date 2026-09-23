@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23a';
+const APP_BUILD_VERSION = '2026-09-23c';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,25 @@ const APP_BUILD_VERSION = '2026-09-23a';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23c',
+    date: '23 Sep 2026',
+    bullets: [
+      "TB testing is now recorded as its two actual injections \u2014 Avian tuberculin and Bovine tuberculin \u2014 instead of a single \u201cTB test\u201d. Both are built in (no withdrawal, \u00a30 cost, no dosage/kg) and show under TB testing in the Medicine Cabinet.",
+      "When a vet records either one, the product list offers both and fills in 0.1ml, Injection, \u00a30 and no withdrawal automatically. An animal only counts as TB tested once BOTH have been recorded within a day of each other \u2014 you\u2019ll get a reminder if one\u2019s missing.",
+      "Fixed: there was previously no way to record a TB test that the app actually recognised, so every animal on a real farm would have shown as TB overdue."
+    ]
+  },
+  {
+    version: '2026-09-23b',
+    date: '23 Sep 2026',
+    bullets: [
+      "Settings now opens with a Farm section holding CPH number, location, animal names/Mgmt ID and a new TB testing setting (every 6, 12, 24 or 48 months). TB test overdue/due-soon warnings now use whichever interval you pick instead of always 6 months. Farm details and Farmers & vets follow straight after.",
+      "Farm details ratings now only look at the key details for each type \u2014 the \u201cuseful to add\u201d extras are still suggested but no longer affect red/amber/green.",
+      "Reports: Animals to sell and Animals to keep are now one Sell/Keep report with a switch at the top. New Insights tile (coming soon), and the tiles have been reordered.",
+      "Animal List filter: the Health buttons now light up in their own colour when selected (grey, green, amber, red)."
+    ]
+  },
   {
     version: '2026-09-23a',
     date: '23 Sep 2026',
@@ -946,7 +965,7 @@ async function loadFarmData(farmId){
   const { data: remoteMedTypes, error: medTypeErr } = await sb.from('medicine_types').select('*').eq('farm_id', farmId);
   if(medTypeErr){ authError = medTypeErr.message; return; }
   medicineTypes = remoteMedTypes || [];
-  ensureTbTestMedicineType();
+  ensureTbTestMedicineType(true);
   const { data: remoteFarmersVets, error: fvErr } = await sb.from('farmers_vets').select('*').eq('farm_id', farmId);
   if(fvErr){ authError = fvErr.message; return; }
   farmersVets = remoteFarmersVets || [];
@@ -970,8 +989,9 @@ async function loadFarmData(farmId){
     farmSettings.manage_fodder_spend = remoteFarmSettings.manage_fodder_spend!==false;
     farmSettings.use_ai = !!remoteFarmSettings.use_ai;
     farmSettings.groq_api_key = remoteFarmSettings.groq_api_key||null;
+    farmSettings.tb_test_interval_months = remoteFarmSettings.tb_test_interval_months||6;
   } else {
-    await sb.from('farm_settings').insert({ farm_id:farmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false, manage_fodder_spend:farmSettings.manage_fodder_spend!==false, use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null });
+    await sb.from('farm_settings').insert({ farm_id:farmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false, manage_fodder_spend:farmSettings.manage_fodder_spend!==false, use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null, tb_test_interval_months:tbTestIntervalMonths() });
   }
 
   // Per-user settings — this signed-in person's own row only, never
@@ -1428,6 +1448,7 @@ async function syncFarmSettingsToSupabase(){
     typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false,
     manage_fodder_spend:farmSettings.manage_fodder_spend!==false,
     use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null,
+    tb_test_interval_months:tbTestIntervalMonths(),
   }});
 }
 // Per-user — deliberately keyed by user_id alone, never farm_id. See the
@@ -2301,19 +2322,45 @@ function daysAgoIso(days){ const d=new Date(); d.setDate(d.getDate()-days); retu
 // always be present in the Medicine list and can never be disabled. Runs
 // on every load (both fresh seed and existing farms) so it's added
 // retroactively for anyone who already had data before this was introduced.
-function ensureTbTestMedicineType(){
-  const existing=medicineTypes.find(m=>m.name.trim().toLowerCase()==='tb test');
-  if(existing){
-    existing.locked=true; existing.active=true;
-  } else {
-    const tb={id:uuid(), name:'TB test', withdrawal_days:0, active:true, locked:true};
-    medicineTypes.push(tb);
-    // Fire-and-forget, same reasoning as setFeedStatus — this can be
-    // called from many places, some not already async/awaited, and it's
-    // a one-off default-data creation, not a user action that needs to
-    // block on network confirmation.
-    if(typeof syncMedicineTypeToSupabase==='function') syncMedicineTypeToSupabase(tb);
-  }
+//
+// A TB (skin) test is two injections given together by the vet, 0.1ml
+// each: Avian tuberculin and Bovine tuberculin (Si, 23 Sep 2026). Both are
+// built-in locked medicine types — no withdrawal, £0 cost (the farmer
+// doesn't pay for them), no dosage/kg. The old single "TB test" type is
+// kept (never created any more, never offered) purely so historical
+// records against it still count as a TB test.
+//
+// Only pushes to Supabase when called with sync=true — i.e. straight after
+// loadFarmData has pulled this farm's real medicine types. Every other
+// call site runs against local/pre-load data, and pushing from there is
+// how the Pilot Farm ended up with 3 duplicate "TB test" rows (each device
+// creating its own before the shared one had loaded). Duplicates are
+// harmless anyway since TB records are matched by name, not a single id.
+const TB_TUBERCULINS=[
+  {kind:'avian', name:'Avian tuberculin'},
+  {kind:'bovine', name:'Bovine tuberculin'},
+];
+const TB_TUBERCULIN_DOSE_ML=0.1;
+const TB_LEGACY_TYPE_NAME='tb test';
+function ensureTbTestMedicineType(sync){
+  TB_TUBERCULINS.forEach(t=>{
+    const existing=medicineTypes.find(m=>m.locked && m.name.trim().toLowerCase()===t.name.toLowerCase());
+    if(existing){
+      const changed = !existing.active || existing.withdrawal_days!==0 || existing.cost!==0 || existing.dosage_per_kg!=null || existing.type!=='TB test';
+      existing.active=true; existing.withdrawal_days=0; existing.cost=0; existing.dosage_per_kg=null; existing.type='TB test';
+      if(changed && sync && typeof syncMedicineTypeToSupabase==='function') syncMedicineTypeToSupabase(existing);
+    } else {
+      const tb={id:uuid(), name:t.name, type:'TB test', withdrawal_days:0, cost:0, dosage_per_kg:null, qty_unit:'ml', active:true, locked:true};
+      medicineTypes.push(tb);
+      if(sync && typeof syncMedicineTypeToSupabase==='function') syncMedicineTypeToSupabase(tb);
+    }
+  });
+}
+// The built-in tuberculin type for a product name (case-insensitive), or null.
+function tbTuberculinType(name){
+  const n=(name||'').trim().toLowerCase();
+  if(!TB_TUBERCULINS.some(t=>t.name.toLowerCase()===n)) return null;
+  return medicineTypes.find(m=>m.locked && m.name.trim().toLowerCase()===n) || null;
 }
 // Retroactively backfills "every demo animal except A-1024 has a recent TB
 // test" for anyone who already had the built-in test dataset loaded before
@@ -2324,13 +2371,14 @@ function ensureTbTestMedicineType(){
 // farm's own animals.
 function ensureDemoTbTests(){
   if(farmSettings.test_data_mode!=='loaded') return;
-  const tbId=tbTestTypeId();
-  if(!tbId) return;
+  const tbType=tbTuberculinType('Bovine tuberculin');
+  if(!tbType) return;
+  const tbId=tbType.id;
   animals.forEach(a=>{
     if(a.tag_number==='A-1024') return;
     if(!tbTestOverdue(a.id)) return;
     medicineRecords.push({
-      id:uuid(), animal_id:a.id, medicine_type_id:tbId, product_name:'TB test',
+      id:uuid(), animal_id:a.id, medicine_type_id:tbId, product_name:'TB test', // legacy-style record: counts on its own
       farmer_vet_id: farmersVets.length ? pick(farmersVets).id : null,
       dose:null, dose_unit:null,
       reason:'routine', cost: +(15+Math.random()*10).toFixed(2),
@@ -2462,7 +2510,8 @@ function generateDemoAnimalRecords(){
     // (and the "no TB test" flag generally) has something real to catch
     // when trying the feature against the seed data. ----
     if(i!==24){
-      const tbId=tbTestTypeId();
+      const tbType=tbTuberculinType('Bovine tuberculin');
+      const tbId=tbType?tbType.id:null;
       if(tbId){
         const administeredAt=daysAgoIso(randInt(10,150)); // comfortably inside the 6-month window
         medicineRecords.push({
@@ -3480,21 +3529,61 @@ function eidStatusColor(eid, birthDate){
 // an animal has a record of one within the last 6 months. No record at all
 // counts as overdue. This is a warning-only check throughout the app — it
 // never blocks a move, it just flags it.
-function tbTestTypeId(){
-  const t=medicineTypes.find(m=>m.locked && m.name.trim().toLowerCase()==='tb test');
-  return t?t.id:null;
+// Which part of a TB test a medicine record is: 'avian' | 'bovine' |
+// 'legacy' (the old single "TB test") | null. Matched by the linked type's
+// name OR the record's own product name, so duplicate type rows, or a
+// record saved against a type id that no longer exists, still count.
+function tbRecordKind(r){
+  const t=r.medicine_type_id?medicineTypes.find(m=>m.id===r.medicine_type_id):null;
+  const names=[t&&t.locked?t.name:null, r.product_name].filter(Boolean).map(n=>n.trim().toLowerCase());
+  for(const tb of TB_TUBERCULINS){ if(names.includes(tb.name.toLowerCase())) return tb.kind; }
+  if(names.includes(TB_LEGACY_TYPE_NAME)) return 'legacy';
+  return null;
 }
+// A tuberculin with no matching partner within a day either side.
+const TB_PAIR_WINDOW_MS=36*3600*1000;
+function tbPartnerOf(r, recs){
+  const kind=tbRecordKind(r);
+  const other = kind==='avian' ? 'bovine' : kind==='bovine' ? 'avian' : null;
+  if(!other) return null;
+  const t=new Date(r.administered_at).getTime();
+  return recs.find(x=>tbRecordKind(x)===other && Math.abs(new Date(x.administered_at).getTime()-t)<=TB_PAIR_WINDOW_MS) || null;
+}
+// Date of the animal's most recent COMPLETE TB test: both tuberculins
+// recorded within a day of each other (the later of the pair), or an old
+// single "TB test" record. A lone avian or bovine doesn't count.
 function lastTbTestDate(animalId){
-  const tbId=tbTestTypeId();
-  if(!tbId) return null;
-  const recs=medicineRecords.filter(r=>r.animal_id===animalId && r.medicine_type_id===tbId)
-    .sort((a,b)=>new Date(b.administered_at)-new Date(a.administered_at));
-  return recs.length ? recs[0].administered_at : null;
+  const recs=medicineRecords.filter(r=>r.animal_id===animalId && tbRecordKind(r));
+  let best=null;
+  recs.forEach(r=>{
+    const kind=tbRecordKind(r);
+    let d=null;
+    if(kind==='legacy') d=r.administered_at;
+    else { const p=tbPartnerOf(r, recs); if(p) d = new Date(p.administered_at)>new Date(r.administered_at) ? p.administered_at : r.administered_at; }
+    if(d && (!best || new Date(d)>new Date(best))) best=d;
+  });
+  return best;
+}
+// If this record is one tuberculin with its partner still missing, the
+// missing one's name — used for the "don't forget" reminder after saving.
+function tbMissingPartnerName(r){
+  const kind=tbRecordKind(r);
+  if(kind!=='avian' && kind!=='bovine') return null;
+  const recs=medicineRecords.filter(x=>x.animal_id===r.animal_id && tbRecordKind(x));
+  if(tbPartnerOf(r, recs)) return null;
+  return TB_TUBERCULINS.find(t=>t.kind!==kind).name;
+}
+// Farm-wide TB testing interval (Settings > Farm > TB testing) — 6, 12, 24
+// or 48 months depending on the farm's testing area. Defaults to 6.
+const TB_TEST_INTERVAL_OPTIONS=[6,12,24,48];
+function tbTestIntervalMonths(){
+  const m=parseInt(farmSettings && farmSettings.tb_test_interval_months,10);
+  return TB_TEST_INTERVAL_OPTIONS.includes(m) ? m : 6;
 }
 function tbTestOverdue(animalId){
   const last=lastTbTestDate(animalId);
   if(!last) return true;
-  const cutoff=new Date(); cutoff.setMonth(cutoff.getMonth()-6);
+  const cutoff=new Date(); cutoff.setMonth(cutoff.getMonth()-tbTestIntervalMonths());
   return new Date(last) < cutoff;
 }
 // True in the window before an animal actually goes overdue — i.e. the
@@ -3507,7 +3596,7 @@ const TB_DUE_SOON_WARNING_DAYS = 28;
 function tbTestDueDate(animalId){
   const last=lastTbTestDate(animalId);
   if(!last) return null;
-  const due=new Date(last); due.setMonth(due.getMonth()+6);
+  const due=new Date(last); due.setMonth(due.getMonth()+tbTestIntervalMonths());
   return due;
 }
 function tbTestDueSoon(animalId){
@@ -4217,7 +4306,7 @@ let expandedMedCabAttentionKey=null;
 function systemSettingsIssues(){
   const issues=[];
   if(!farmSettings.cph || !farmSettings.cph.trim()){
-    issues.push({key:'cph', label:'Farm CPH number not set', settingsSection:null});
+    issues.push({key:'cph', label:'Farm CPH number not set', settingsSection:'farm'});
   }
   if(!breeds.filter(b=>b.active).length){
     issues.push({key:'breeds', label:'No breeds added yet', settingsSection:'breeds'});
@@ -4864,13 +4953,13 @@ function renderReports(){
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Reports</span><span></span></div>
     <div class="body bigtext" style="padding-top:2px;">
       <div class="icongrid" style="padding-top:3px;">
+        ${tile('rep-insights','lineChart','Insights',{color:'var(--primary)'})}
         ${tile('rep-donetoday','clipboard','Done today',{color:'var(--primary)'})}
-        ${tile('rep-livestockvalue','pound','Livestock value',{iconHtml:poundIcon(),color:'var(--grey)'})}
         ${tile('rep-vetspend','syringe','Vet spend<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
         ${tile('rep-feedcost','knifefork','Fodder cost<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
-        ${tile('rep-sellyes','gavel','Animals to sell',{color:'var(--green)'})}
-        ${tile('rep-sellno','gavel','Animals to keep',{color:'var(--red)'})}
+        ${tile('rep-livestockvalue','pound','Livestock value',{iconHtml:poundIcon(),color:'var(--grey)'})}
         ${tile('rep-roi','roi','ROI<br><span style="font-size:11px;">(cost vs current)</span>',{color:'var(--grey)'})}
+        ${tile('rep-sellkeep','gavel','Sell/Keep',{color:'var(--green)'})}
         ${tile('rep-realized','roi','Realised profit/loss<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
       </div>
     </div>
@@ -5113,9 +5202,13 @@ function renderReportDetail(){
   }
   else if(type==='sellyes' || type==='sellno'){
     const recommend = type==='sellyes';
-    title = recommend ? 'Animals to sell' : 'Animals to keep';
+    title = 'Sell/Keep';
     const rows=reportAnimalsToSell(recommend);
     body=`
+      <div class="radiogroup" style="display:flex;gap:10px;margin:2px 0 12px;">
+        <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;text-transform:none;font-size:16px;font-weight:700;padding:10px;border-radius:8px;cursor:pointer;border:2px solid ${recommend?'var(--green)':'var(--line)'};background:${recommend?'var(--green-bg)':'#fff'};color:${recommend?'var(--green)':'var(--grey)'};margin:0;"><input type="radio" name="sellKeepRadio" id="sellKeepSell" ${recommend?'checked':''} style="accent-color:var(--green);"> Sell</label>
+        <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;text-transform:none;font-size:16px;font-weight:700;padding:10px;border-radius:8px;cursor:pointer;border:2px solid ${!recommend?'var(--red)':'var(--line)'};background:${!recommend?'var(--red-bg)':'#fff'};color:${!recommend?'var(--red)':'var(--grey)'};margin:0;"><input type="radio" name="sellKeepRadio" id="sellKeepKeep" ${!recommend?'checked':''} style="accent-color:var(--red);"> Keep</label>
+      </div>
       <div style="font-size:15px;color:var(--grey);margin-bottom:10px;">${recommend
         ? 'At Prime age, healthy, not currently pregnant or with offspring, and showing a profit \u2014 good candidates to consider selling now, ordered by profit (highest first).'
         : 'Below or past Prime age, currently pregnant/with offspring, or health score are worth keeping for now.'}
@@ -5159,6 +5252,16 @@ function renderReportDetail(){
         </div>`;
       }).join('') : '<div class="empty">No animals currently match.</div>'}
       ${rows.length>sellShowCount?`<button id="sell-showmore" class="fullbtn ghost" style="margin-top:10px;">Show 30 more (${rows.length-sellShowCount} left)</button>`:''}`;
+  }
+  else if(type==='insights'){
+    // Placeholder — functionality to follow in the next build.
+    title='Insights';
+    body=`
+      <div style="text-align:center;padding:40px 16px;color:var(--grey);">
+        <div style="width:56px;height:56px;margin:0 auto 12px;color:var(--primary);">${icon('lineChart')}</div>
+        <div style="font-size:18px;font-weight:800;color:var(--ink);margin-bottom:6px;">Coming soon</div>
+        <div style="font-size:15px;">Insights about your farm will appear here.</div>
+      </div>`;
   }
   else if(type==='realized'){
     title='Realised profit/loss (monthly)';
@@ -6710,7 +6813,7 @@ function renderMedicineAdd(){
   const lw=lastWeightRecord(a.id);
   const currentWeight=lw?lw.weight_kg:null;
   const today=todayStr();
-  const knownProducts=[...new Set([...medicineTypes.filter(m=>!m.locked).map(m=>m.name), ...medicineRecords.filter(r=>r.product_name).map(r=>r.product_name)])].sort();
+  const knownProducts=[...new Set([...TB_TUBERCULINS.map(t=>t.name), ...medicineTypes.filter(m=>!m.locked).map(m=>m.name), ...medicineRecords.filter(r=>r.product_name && r.product_name.trim().toLowerCase()!==TB_LEGACY_TYPE_NAME).map(r=>r.product_name)])].sort();
   const cabinetProductNames=[...new Set(activeCabinetItems().map(m=>m.name))].sort();
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>${headerIdName(a,26)}</span><span></span></div>
@@ -7126,9 +7229,9 @@ const FARM_DETAIL_TYPES={
 const FARM_DETAIL_CATEGORIES=['field','building','machinery','other'];
 const FARM_DETAIL_MAX_CHARS=1000;
 // -> {rag:'red'|'amber'|'green', hits:{key:bool}, missingEssential:[labels], missingUseful:[labels]}
-// green = every key detail plus at least half the useful ones; amber = every
-// key detail, or all but one key detail with at least half the useful ones;
-// red = anything less. Blank details are always red.
+// Rated on the KEY details only (Si, 23 Sep): green = every key detail;
+// amber = all but one; red = anything less, or blank. The "useful to add"
+// items are still checked and shown as suggestions but don't move the rating.
 function farmDetailRating(category, name, details){
   const def=FARM_DETAIL_TYPES[category]||FARM_DETAIL_TYPES.other;
   const d=details||'';
@@ -7137,11 +7240,10 @@ function farmDetailRating(category, name, details){
   def.checks.forEach(c=>{ hits[c.key] = c.test ? !!c.test(text,d) : c.re.test(text); });
   const ess=def.checks.filter(c=>c.essential), use=def.checks.filter(c=>!c.essential);
   const essHit=ess.filter(c=>hits[c.key]).length, useHit=use.filter(c=>hits[c.key]).length;
-  const useRatio=use.length?useHit/use.length:1;
   let rag='red';
   if(d.trim()){
-    if(essHit===ess.length && useRatio>=0.5) rag='green';
-    else if(essHit===ess.length || (essHit===ess.length-1 && useRatio>=0.5)) rag='amber';
+    if(essHit===ess.length) rag='green';
+    else if(essHit===ess.length-1) rag='amber';
   }
   return { rag, hits,
     missingEssential: ess.filter(c=>!hits[c.key]).map(c=>c.label),
@@ -7171,15 +7273,15 @@ function farmDetailChecklistHtml(category, name, details){
     </div>
     <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:8px 0 2px;">Key details</div>
     ${def.checks.filter(c=>c.essential).map(item).join('')}
-    <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:10px 0 2px;">Useful to add</div>
+    <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:10px 0 2px;">Useful to add <span style="text-transform:none;font-weight:600;">(doesn\u2019t affect the rating)</span></div>
     ${def.checks.filter(c=>!c.essential).map(item).join('')}`;
 }
 // Plain-text version of the checklist for a sub-expander's ? help popup.
 function farmDetailTypeHelpText(category){
   const def=FARM_DETAIL_TYPES[category];
-  return 'What to include for each '+def.singular+':\n\nKey details (needed for amber/green):\n'
+  return 'What to include for each '+def.singular+':\n\nKey details (these set the red/amber/green rating):\n'
     + def.checks.filter(c=>c.essential).map(c=>'\u2022 '+c.label).join('\n')
-    + '\n\nUseful to add (half or more of these for green):\n'
+    + '\n\nUseful to add:\n'
     + def.checks.filter(c=>!c.essential).map(c=>'\u2022 '+c.label).join('\n')
     + '\n\nThe rating only checks that each topic has been mentioned, not that what you\u2019ve written is right. Up to '+FARM_DETAIL_MAX_CHARS+' characters per entry \u2014 if you need more, add a second entry.';
 }
@@ -7324,6 +7426,28 @@ function renderSettings(){
       </div>`;
     }).join('') : '<div class="empty" style="padding:8px 4px;">No medicine yet \u2014 click Add.</div>';
 
+    // Built-in TB testing tuberculins — read-only, not stock the farm holds
+    // (the vet brings them), so no batch/qty/dispose like the items above.
+    const tbOpen=medCabinetExpandedType==='__tbtesting__';
+    const tbTypesHtml = `
+      <div style="margin:6px 0;">
+        <button class="damagebar" data-toggle-medcabtype="__tbtesting__" style="background:var(--green);color:#fff;font-size:16px;padding:13px 14px;">
+          <span style="flex:1;text-align:left;">TB testing <span style="font-weight:400;font-size:13px;">(built in)</span></span>
+          <span class="pill" style="background:rgba(255,255,255,.28);font-size:15px;margin-right:8px;">${TB_TUBERCULINS.length}</span>
+          <span style="width:20px;height:20px;flex-shrink:0;">${icon(tbOpen?'triangleDown':'triangleRight')}</span>
+        </button>
+        ${tbOpen?`<div class="damagepanel">
+          <div style="font-size:13px;color:var(--grey);margin-bottom:6px;">Both are given together by the vet for every TB test, 0.1ml each. Record both \u2014 the test only counts once both are in.</div>
+          ${TB_TUBERCULINS.map(t=>`
+          <div class="row" style="cursor:default;align-items:flex-start;">
+            <div style="flex:1;min-width:0;">
+              <div class="name">${escapeHtml(t.name)}</div>
+              <div style="font-size:12.5px;color:var(--grey);margin-top:2px;">Dose ${TB_TUBERCULIN_DOSE_ML}ml \u00b7 Withdrawal 0 days \u00b7 Cost ${fmtGBP(0)} \u00b7 Dosage/kg \u2014</div>
+            </div>
+          </div>`).join('')}
+        </div>`:''}
+      </div>`;
+
     const previous=previousCabinetItems(medCabinetPrevMonthsBack);
     const renderPrevRow=(m)=>`
       <div class="row" data-viewmedcab="${m.id}" style="cursor:pointer;">
@@ -7335,7 +7459,7 @@ function renderSettings(){
         <span>View previous</span><span style="width:20px;height:20px;flex-shrink:0;">${icon(medCabinetViewPrevExpanded?'triangleDown':'triangleRight')}</span>
       </button>
       ${medCabinetViewPrevExpanded? (previous.length? previous.map(renderPrevRow).join('') + `<button id="medCabinetPrevShowMore" class="fullbtn ghost" style="margin-top:10px;">Show previous ${medCabinetPrevMonthsBack} months</button>` : `<div class="empty" style="padding:10px 4px;">None disposed in the last ${medCabinetPrevMonthsBack} months.</div><button id="medCabinetPrevShowMore" class="fullbtn ghost" style="margin-top:10px;">Show previous ${medCabinetPrevMonthsBack} months</button>`) : ''}`;
-    return typesHtml + prevHtml;
+    return typesHtml + tbTypesHtml + prevHtml;
   })();
 
   const farmersVetsBody = sortedBreeds(farmersVets).map(p=>`
@@ -7352,7 +7476,7 @@ function renderSettings(){
     </div>`;
 
   const farmDetailsBody=(()=>{
-    const intro=`<div style="font-size:13px;color:var(--grey);margin-bottom:10px;">Tell the app about your land and resources. Each entry is rated <span style="color:var(--red);font-weight:700;">red</span>/<span style="color:var(--amber);font-weight:700;">amber</span>/<span style="color:var(--green);font-weight:700;">green</span> for how much useful detail it has. Shared with everyone on this farm.</div>`;
+    const intro=`<div style="font-size:13px;color:var(--grey);margin-bottom:10px;">Tell the app about your land and resources. Each entry is rated <span style="color:var(--red);font-weight:700;">red</span>/<span style="color:var(--amber);font-weight:700;">amber</span>/<span style="color:var(--green);font-weight:700;">green</span> for how much of the key detail it has.</div>`;
     return intro + FARM_DETAIL_CATEGORIES.map(cat=>{
       const def=FARM_DETAIL_TYPES[cat];
       const items=farmDetails.filter(d=>d.category===cat).slice().sort((a,b)=>a.name.localeCompare(b.name, undefined, {numeric:true}));
@@ -7363,7 +7487,7 @@ function renderSettings(){
       const ragSummary=items.length?`<span style="display:flex;gap:3px;margin-right:8px;">${['red','amber','green'].filter(k=>counts[k]).map(k=>`<span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:var(--${k});border:1.5px solid #fff;font-size:11px;font-weight:800;color:#fff;">${counts[k]}</span>`).join('')}</span>`:'';
       const rowHtml=(d)=>{
         const r=farmDetailRating(cat,d.name,d.details);
-        const missing=[...r.missingEssential, ...r.missingUseful].map(fdShortLabel);
+        const missing=r.missingEssential.map(fdShortLabel);
         const missingText = r.rag==='green' ? '' : (missing.length?'Missing: '+missing.slice(0,3).join(', ')+(missing.length>3?' +'+(missing.length-3)+' more':''):'');
         const firstLine=(d.details||'').split('\n')[0];
         return `
@@ -7418,27 +7542,35 @@ function renderSettings(){
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Settings</span><span></span></div>
     <div class="body">
-      <div class="formrow"><label>Farm CPH number</label><div class="formctrl">
-        <input type="text" inputmode="numeric" id="cphInput" maxlength="11" placeholder="e.g. 12/345/6789" value="${farmSettings.cph?escapeHtml(farmSettings.cph):''}">
-      </div></div>
+      <div id="settingsSection-farm" style="margin:8px 0;">
+        <button class="damagebar" data-togglesettings="farm" style="background:var(--grey);font-size:16px;padding:13px 14px;">
+          <span style="flex:1;text-align:left;">Farm</span>
+          ${farmSettings.cph?`<span class="pill" style="background:rgba(255,255,255,.28);font-size:13px;margin-right:8px;">${escapeHtml(farmSettings.cph)}</span>`:''}
+          <span style="width:20px;height:20px;flex-shrink:0;">${icon(settingsOpenSection==='farm'?'triangleDown':'triangleRight')}</span>
+        </button>
+        ${settingsOpenSection==='farm'?`<div class="damagepanel">
+          <div class="formrow" style="margin-top:0;"><label>CPH number</label><div class="formctrl">
+            <input type="text" inputmode="numeric" id="cphInput" maxlength="11" placeholder="e.g. 12/345/6789" value="${farmSettings.cph?escapeHtml(farmSettings.cph):''}">
+          </div></div>
 
-      <div class="formrow"><label>Farm location</label><div class="formctrl" style="display:flex;gap:8px;align-items:center;">
-        <input type="text" id="farmLocationInput" placeholder="Not captured" readonly value="${farmSettings.farm_location?farmSettings.farm_location.lat+', '+farmSettings.farm_location.lng:''}" style="flex:1;background:#f3f3f3;color:var(--grey);">
-        <button id="farmLocationBtn" style="background:none;border:none;cursor:pointer;color:var(--ink);width:30px;height:30px;flex-shrink:0;padding:0;">${icon('pin')}</button>
-      </div></div>
-      <div class="field-error" id="err-farmlocation" style="padding:0 2px;"></div>
+          <div class="formrow"><label>Location</label><div class="formctrl" style="display:flex;gap:8px;align-items:center;">
+            <input type="text" id="farmLocationInput" placeholder="Not captured" readonly value="${farmSettings.farm_location?farmSettings.farm_location.lat+', '+farmSettings.farm_location.lng:''}" style="flex:1;background:#f3f3f3;color:var(--grey);">
+            <button id="farmLocationBtn" style="background:none;border:none;cursor:pointer;color:var(--ink);width:30px;height:30px;flex-shrink:0;padding:0;">${icon('pin')}</button>
+          </div></div>
+          <div class="field-error" id="err-farmlocation" style="padding:0 2px;"></div>
 
-      <div class="formrow"><label>Animal names/<br>Mgmt ID? <button class="helpcircle" id="useAnimalNamesHelp" style="margin-left:2px;">?</button></label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
-        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAnimalNamesRadio" id="useAnimalNamesYes" ${farmSettings.use_animal_names!==false?'checked':''}> Yes</label>
-        <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAnimalNamesRadio" id="useAnimalNamesNo" ${farmSettings.use_animal_names===false?'checked':''}> No</label>
-      </div></div>
-      <div style="border-top:1px solid var(--line);margin:12px 0 4px;"></div>
+          <div class="formrow"><label>Animal names/<br>Mgmt ID? <button class="helpcircle" id="useAnimalNamesHelp" style="margin-left:2px;">?</button></label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
+            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAnimalNamesRadio" id="useAnimalNamesYes" ${farmSettings.use_animal_names!==false?'checked':''}> Yes</label>
+            <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAnimalNamesRadio" id="useAnimalNamesNo" ${farmSettings.use_animal_names===false?'checked':''}> No</label>
+          </div></div>
 
-      ${isSuperAdmin()?section('sysadmin', 'System Admin', adminFarmsList?adminFarmsList.length:'', sysAdminBody, ''):''}
-      ${section('breeds', 'Breeds', breeds.length, breedsBody, breedsAddForm)}
-      ${section('feedtypes', 'Fodder', feedTypes.length, feedTypesBody, feedTypesAddForm)}
-      ${section('medtypes', 'Medicine Cabinet', activeCabinetItems().length, medCabinetBody, '')}
-      ${section('farmersvets', 'Farmers & vets', farmersVets.length, farmersVetsBody, farmersVetsAddForm)}
+          <div class="formrow" style="border-bottom:none;"><label>TB testing <button class="helpcircle" id="tbTestIntervalHelp" style="margin-left:2px;">?</button></label><div class="formctrl">
+            <select id="tbTestIntervalSelect">
+              ${TB_TEST_INTERVAL_OPTIONS.map(m=>`<option value="${m}" ${tbTestIntervalMonths()===m?'selected':''}>${m} months</option>`).join('')}
+            </select>
+          </div></div>
+        </div>`:''}
+      </div>
       <div id="settingsSection-farmdetails" style="margin:8px 0;">
         <div class="damagebar" role="button" tabindex="0" data-togglesettings="farmdetails" style="background:var(--grey);font-size:16px;padding:13px 14px;">
           <span style="flex:1;text-align:left;">Farm details</span>
@@ -7448,6 +7580,12 @@ function renderSettings(){
         </div>
         ${settingsOpenSection==='farmdetails'?`<div class="damagepanel">${farmDetailsBody}</div>`:''}
       </div>
+      ${section('farmersvets', 'Farmers & vets', farmersVets.length, farmersVetsBody, farmersVetsAddForm)}
+
+      ${isSuperAdmin()?section('sysadmin', 'System Admin', adminFarmsList?adminFarmsList.length:'', sysAdminBody, ''):''}
+      ${section('breeds', 'Breeds', breeds.length, breedsBody, breedsAddForm)}
+      ${section('feedtypes', 'Fodder', feedTypes.length, feedTypesBody, feedTypesAddForm)}
+      ${section('medtypes', 'Medicine Cabinet', activeCabinetItems().length, medCabinetBody, '')}
       <div id="settingsSection-useai" style="margin:8px 0;">
         <button class="damagebar" data-togglesettings="useai" style="background:var(--grey);font-size:16px;padding:13px 14px;">
           <span>Use AI?</span>
@@ -7703,7 +7841,11 @@ function renderFilterModal(){
       ${[1,2,3,4,5].map(n=>`<option value="${n}" ${filterBcs===n?'selected':''}>${n}</option>`).join('')}
     </select>
     <label>Health</label>
-    <div class="chips">${healthOpts.map(([k,label])=>`<button class="chip ${filterHealth===k?'on':''}" data-filterhealth="${k===null?'':k}">${label}</button>`).join('')}</div>
+    <div class="chips">${healthOpts.map(([k,label])=>{
+      const on=filterHealth===k;
+      const col=k===null?'var(--grey)':'var(--'+k+')';
+      return `<button class="chip ${on?'on':''}" data-filterhealth="${k===null?'':k}" style="${on?`background:${col};border-color:${col};color:#fff;`:''}">${label}</button>`;
+    }).join('')}</div>
     <label style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;">
       <span>Off farm</span>
       <input type="checkbox" id="filterOffFarm" ${filterOffFarm?'checked':''} style="width:20px;height:20px;flex-shrink:0;accent-color:var(--green);">
@@ -8333,6 +8475,7 @@ function renderModal(){
   if(modal.type==='medBulkAsk'){
     div.innerHTML=`<div class="modal">
       <h3>Same medicine, another animal?</h3>
+      ${modal.tbMissing?`<div class="warnbanner" style="display:block;font-size:13.5px;">Don\u2019t forget <b>${escapeHtml(modal.tbMissing)}</b> for this animal too \u2014 the TB test only counts once both injections are recorded. Tap No to go back and add it.</div>`:''}
       <div class="sub">Do you want to give more animals the same medicine?</div>
       <div style="display:flex;gap:8px;margin-top:16px;">
         <button class="fullbtn ghost" id="modalCancel" style="flex:1;margin-top:0;">No</button>
@@ -8530,7 +8673,7 @@ function renderModal(){
     const tbOverdue=a?tbTestOverdue(a.id):false;
     const reasons=[];
     if(wd) reasons.push('In a medicine withdrawal period until '+fmtDate(wd.withdrawal_until)+' ('+(wd.product_name?escapeHtml(wd.product_name):medicineTypeName(wd.medicine_type_id))+').');
-    if(tbOverdue) reasons.push('No TB test recorded within the last 6 months.');
+    if(tbOverdue) reasons.push('No TB test recorded within the last '+tbTestIntervalMonths()+' months.');
     div.innerHTML=`<div class="modal">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <h3 style="margin:0;color:var(--red);">Legal warning</h3>
@@ -10218,13 +10361,17 @@ function wireView(){
     document.getElementById('rep-feedcost').onclick=()=>go('feedcost');
     document.getElementById('rep-livestockvalue').onclick=()=>go('livestockvalue');
     document.getElementById('rep-roi').onclick=()=>go('roi');
-    document.getElementById('rep-sellyes').onclick=()=>go('sellyes');
-    document.getElementById('rep-sellno').onclick=()=>go('sellno');
+    document.getElementById('rep-sellkeep').onclick=()=>go('sellyes'); // Sell/Keep opens on Sell; the radio at the top switches it
+    document.getElementById('rep-insights').onclick=()=>go('insights');
     document.getElementById('rep-realized').onclick=()=>go('realized');
     const repAskBtn=document.getElementById('rep-ask');
     if(repAskBtn) repAskBtn.onclick=()=>{ askQuestionText=''; askAnswer=null; askError=null; askLoading=false; view='ask'; render(); };
   }
   if(view==='reportDetail'){
+    const sellKeepSwitch=(t)=>{ if(reportType===t) return; reportType=t; reportExpandedKey=null; sellShowCount=30; herdSelectMode=false; herdSelectedIds=[]; render(); };
+    const sellKeepSellEl=document.getElementById('sellKeepSell'), sellKeepKeepEl=document.getElementById('sellKeepKeep');
+    if(sellKeepSellEl) sellKeepSellEl.onchange=()=>sellKeepSwitch('sellyes');
+    if(sellKeepKeepEl) sellKeepKeepEl.onchange=()=>sellKeepSwitch('sellno');
     document.getElementById('reportdetail-help').onclick=()=>{
       if(reportType==='sellyes' && herdSelectMode){ showInfoModal('Tap more animals to add them to the selection, then tap Move to send them all to market together. Tap the back arrow to cancel.'); return; }
       const base = reportType==='donetoday'
@@ -10802,15 +10949,25 @@ Rules:
       if(statusEl){ statusEl.style.display='block'; statusEl.textContent='Downloaded \u2014 '+animals.length+' animals, '+weights.length+' weights, '+medicineRecords.length+' medicine records, '+injuryRecords.length+' injuries.'; }
       showSaveToast('Saved');
     };
-    document.getElementById('cphInput').oninput=(e)=>{
+    const cphInputEl=document.getElementById('cphInput');
+    if(cphInputEl) cphInputEl.oninput=(e)=>{
       const formatted=formatCph(e.target.value);
       e.target.value=formatted;
       e.target.setSelectionRange(formatted.length, formatted.length);
     };
-    document.getElementById('cphInput').onchange=async(e)=>{ farmSettings.cph=formatCph(e.target.value); e.target.value=farmSettings.cph; await persistAll(); await syncFarmSettingsToSupabase(); showSaveToast('Saved'); };
-    document.getElementById('useAnimalNamesHelp').onclick=(e)=>{ e.stopPropagation(); showInfoModal('\u2022 Yes: show the animal\u2019s name (or Mgmt ID if no name) with a short EID reference.\n\n\u2022 No: show the full EID only, everywhere \u2014 Mgmt ID and name are hidden.'); };
-    document.getElementById('useAnimalNamesYes').onchange=async()=>{ farmSettings.use_animal_names=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by name.'); render(); showSaveToast('Updated'); };
-    document.getElementById('useAnimalNamesNo').onchange=async()=>{ farmSettings.use_animal_names=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by tag number.'); render(); showSaveToast('Updated'); };
+    if(cphInputEl) cphInputEl.onchange=async(e)=>{ farmSettings.cph=formatCph(e.target.value); e.target.value=farmSettings.cph; await persistAll(); await syncFarmSettingsToSupabase(); showSaveToast('Saved'); };
+    const tbIntervalEl=document.getElementById('tbTestIntervalSelect');
+    if(tbIntervalEl) tbIntervalEl.onchange=async()=>{
+      farmSettings.tb_test_interval_months=parseInt(tbIntervalEl.value,10)||6;
+      await persistAll(); await syncFarmSettingsToSupabase();
+      logMsg('TB testing interval set to every '+farmSettings.tb_test_interval_months+' months.');
+      showSaveToast('Updated');
+    };
+    const tbIntervalHelpEl=document.getElementById('tbTestIntervalHelp');
+    if(tbIntervalHelpEl) tbIntervalHelpEl.onclick=(e)=>{ e.stopPropagation(); showInfoModal('How often your herd has to be TB tested \u2014 this depends on your testing area (check with APHA or your vet if unsure).\n\nAn animal counts as overdue once its last recorded TB test is older than this, and Attention warns you 4 weeks before one becomes due.'); };
+    if(document.getElementById('useAnimalNamesHelp')) document.getElementById('useAnimalNamesHelp').onclick=(e)=>{ e.stopPropagation(); showInfoModal('\u2022 Yes: show the animal\u2019s name (or Mgmt ID if no name) with a short EID reference.\n\n\u2022 No: show the full EID only, everywhere \u2014 Mgmt ID and name are hidden.'); };
+    if(document.getElementById('useAnimalNamesYes')) document.getElementById('useAnimalNamesYes').onchange=async()=>{ farmSettings.use_animal_names=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by name.'); render(); showSaveToast('Updated'); };
+    if(document.getElementById('useAnimalNamesNo')) document.getElementById('useAnimalNamesNo').onchange=async()=>{ farmSettings.use_animal_names=false; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Animals will now be shown by tag number.'); render(); showSaveToast('Updated'); };
     const manageFodderSpendYesEl=document.getElementById('manageFodderSpendYes');
     if(manageFodderSpendYesEl) manageFodderSpendYesEl.onchange=async()=>{ farmSettings.manage_fodder_spend=true; await persistAll(); await syncFarmSettingsToSupabase(); logMsg('Fodder spend is now tracked \u2014 the Fodder tile is back on Home.'); render(); showSaveToast('Updated'); };
     const manageFodderSpendNoEl=document.getElementById('manageFodderSpendNo');
@@ -10829,7 +10986,7 @@ Rules:
       logMsg(farmSettings.groq_api_key ? 'Groq API key saved \u2014 shared with everyone signed in to this farm.' : 'Groq API key removed \u2014 tag scans will use the built-in offline reader only.');
       showSaveToast('Updated');
     };
-    document.getElementById('farmLocationBtn').onclick=()=>{
+    if(document.getElementById('farmLocationBtn')) document.getElementById('farmLocationBtn').onclick=()=>{
       const errEl=document.getElementById('err-farmlocation'); errEl.textContent='';
       if(!navigator.geolocation){ errEl.textContent='Location isn\u2019t available on this device.'; return; }
       navigator.geolocation.getCurrentPosition(
@@ -11019,7 +11176,7 @@ Rules:
 
     // ---- Farm details ----
     const farmDetailsHelpBtn=document.getElementById('farmDetailsHelp');
-    if(farmDetailsHelpBtn) farmDetailsHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('Add as much detail about your farm/resources as possible. The app may then be able to suggest improvements/grants based on the info given e.g. types of field, size, soil type, altitude, lack of hedges, previous grants granted/declined etc.\n\nUse Fields, Buildings, Machinery, or Other for anything else (woodland, water supply, hedges, labour, previous grant applications). Tap the ? on each one to see what to include.'); };
+    if(farmDetailsHelpBtn) farmDetailsHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('Add as much detail about your farm/resources as possible. The app may then be able to suggest improvements/grants based on the info given e.g. types of field, size, soil type, altitude, lack of hedges, previous grants granted/declined etc.'); };
     document.querySelectorAll('[data-fdcathelp]').forEach(el=>el.onclick=(e)=>{ e.stopPropagation(); showInfoModal(farmDetailTypeHelpText(el.dataset.fdcathelp)); });
     const fdToggle=(el)=>{
       const cat=el.dataset.toggleFdcat;
@@ -11979,8 +12136,18 @@ Rules:
     document.getElementById('med-farmer-addcabinet').onclick=()=>{ medCabEditTargetId=null; medCabAddPhoto=null; view='medCabinetAdd'; render(); };
     dosageAmountInput.oninput=()=>{ updateCostFromDosage(); updateCostFarmerDisplay(); };
     productInput.onchange=()=>{
-      const match=medicineTypes.find(m=>!m.locked && m.name.toLowerCase()===productInput.value.trim().toLowerCase());
-      currentMedMatch=match;
+      const tbType=tbTuberculinType(productInput.value);
+      const match=tbType || medicineTypes.find(m=>!m.locked && m.name.toLowerCase()===productInput.value.trim().toLowerCase());
+      currentMedMatch=tbType?null:match;
+      if(tbType){
+        // Tuberculin: fixed 0.1ml injection, vet's own stock, no charge.
+        productInput.value=tbType.name;
+        dosageAmountInput.value=String(TB_TUBERCULIN_DOSE_ML);
+        document.getElementById('med-dosageunit').value='ml';
+        document.getElementById('med-method').value='Injection';
+        costInput.value='0.00';
+        const stockEl=document.getElementById('med-stock'); if(stockEl) stockEl.checked=true;
+      }
       if(match && match.withdrawal_days>0){
         const d=new Date(); d.setDate(d.getDate()+match.withdrawal_days);
         withdrawalInput.value=d.toISOString().slice(0,10);
@@ -12048,13 +12215,15 @@ Rules:
       // which path is showing — resolve them to one common set before
       // validating, so the rest of this handler doesn't need to know which
       // path was used.
-      let productName, batchNoVal, expiryDateVal, costRaw, cabinetMatch;
+      let productName, batchNoVal, expiryDateVal, costRaw, cabinetMatch, tbTypeMatch=null;
       if(isVetPath){
         productName=productInput.value.trim();
         batchNoVal=document.getElementById('med-batchno').value.trim();
         expiryDateVal=document.getElementById('med-expirydate').value;
         costRaw=document.getElementById('med-cost').value.trim();
         cabinetMatch=medicineTypes.find(m=>!m.locked && m.name.toLowerCase()===productName.toLowerCase());
+        const tbType=tbTuberculinType(productName);
+        if(tbType){ tbTypeMatch=tbType; productName=tbType.name; }
       } else {
         productName=farmerProductSelect.value;
         cabinetMatch=medAddCurrentCabinetItem;
@@ -12097,7 +12266,7 @@ Rules:
         }
       }
       const newMed = {
-        id:uuid(), animal_id:a.id, medicine_type_id:cabinetMatch?cabinetMatch.id:null, product_name:productName,
+        id:uuid(), animal_id:a.id, medicine_type_id:tbTypeMatch?tbTypeMatch.id:(cabinetMatch?cabinetMatch.id:null), product_name:productName,
         farmer_vet_id:farmerVetIdVal,
         stock:stockVal,
         reason:reasonVal,
@@ -12121,7 +12290,7 @@ Rules:
       showSaveToast('Saved');
       // Keep this animal's form exactly as-is on screen for now (it may be
       // reused for the next animal) — ask before navigating away.
-      modal={type:'medBulkAsk'};
+      modal={type:'medBulkAsk', tbMissing:tbMissingPartnerName(newMed)};
       renderModal();
     };
   }
