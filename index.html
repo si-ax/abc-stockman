@@ -90,6 +90,7 @@
   .scanoverlay .spinner{width:38px;height:38px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:scanoverlayspin .8s linear infinite;}
   .scanoverlay .msg{font-size:15px;font-weight:700;}
   @keyframes scanoverlayspin{to{transform:rotate(360deg);}}
+  .oppspinner{width:34px;height:34px;margin:0 auto 10px;border:4px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:scanoverlayspin .8s linear infinite;}
   .noServerIcon{position:absolute;top:14px;right:14px;width:22px;height:22px;color:var(--red);z-index:45;cursor:pointer;background:none;border:none;padding:0;}
 
   /* ---- animal list table ---- */
@@ -293,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23c';
+const APP_BUILD_VERSION = '2026-09-23e';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +302,25 @@ const APP_BUILD_VERSION = '2026-09-23c';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23e',
+    date: '23 Sep 2026',
+    bullets: [
+      "Insights is live (first version): Farm Opportunities. Tap Analyse and aBC looks at your animals, health records, costs and Farm details, works out which UK nation and council area the farm is in, searches the web for current schemes, and shows what may be worth looking at \u2014 funding, saving money, productivity and more.",
+      "Every opportunity is rated Strong match / Potential match / Needs more info, and tapping Why? shows exactly what aBC knows, what it\u2019s assuming, what\u2019s still unknown (with + Add to fill it in) and the official source. What do I need to do? lists the next steps. No made-up odds or figures, and only source links the search actually found are shown.",
+      "Needs Use AI turned on with a Groq key. Results are saved and shared with everyone on the farm, so it only runs when you tap Analyse."
+    ]
+  },
+  {
+    version: '2026-09-23d',
+    date: '23 Sep 2026',
+    bullets: [
+      "Animal List: Select all now toggles \u2014 tap once to select everything visible (the button turns light grey and reads Deselect all), tap again to clear the selection.",
+      "Reports: the Insights tile now has a lightbulb icon.",
+      "Settings: fixed Location showing \u201cundefined, undefined\u201d \u2014 a saved location now shows properly, and it\u2019s left blank if none has been captured.",
+      "Farm details: the keyboard now has a Go key while typing the details, which saves the entry without having to close the keyboard first."
+    ]
+  },
   {
     version: '2026-09-23c',
     date: '23 Sep 2026',
@@ -975,6 +995,10 @@ async function loadFarmData(farmId){
   const { data: remoteFarmDetails, error: fdErr } = await sb.from('farm_details').select('*').eq('farm_id', farmId);
   if(!fdErr) farmDetails = remoteFarmDetails || [];
   else console.warn('farm_details load failed:', fdErr.message);
+  // Latest Farm Opportunities run — optional, same non-fatal treatment.
+  const { data: remoteOpps, error: foErr } = await sb.from('farm_opportunities').select('*').eq('farm_id', farmId).order('created_at', {ascending:false}).limit(1);
+  if(!foErr){ const ro=remoteOpps&&remoteOpps[0]; if(ro && (!farmOpportunitiesLatest || new Date(ro.created_at)>=new Date(farmOpportunitiesLatest.created_at))) farmOpportunitiesLatest = ro; }
+  else console.warn('farm_opportunities load failed:', foErr.message);
 
   // Farm-wide settings — one shared row per farm. Created from whatever's
   // currently in the local default if this farm doesn't have one yet
@@ -983,7 +1007,7 @@ async function loadFarmData(farmId){
   if(fsErr){ authError = fsErr.message; return; }
   if(remoteFarmSettings){
     farmSettings.cph = remoteFarmSettings.cph||'';
-    farmSettings.farm_location = remoteFarmSettings.farm_location;
+    farmSettings.farm_location = normaliseFarmLocation(remoteFarmSettings.farm_location);
     farmSettings.typical_gestation_days = remoteFarmSettings.typical_gestation_days??283;
     farmSettings.use_animal_names = remoteFarmSettings.use_animal_names!==false;
     farmSettings.manage_fodder_spend = remoteFarmSettings.manage_fodder_spend!==false;
@@ -1679,6 +1703,7 @@ const ICONS = {
   calendarJump: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="2"/><line x1="3.5" y1="9.5" x2="20.5" y2="9.5"/><line x1="8" y1="3" x2="8" y2="6.5"/><line x1="16" y1="3" x2="16" y2="6.5"/><path d="M8.5 13.5h2M13.5 13.5h2M8.5 17h2M13.5 17h2"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h9"/><line x1="10" y1="12" x2="21" y2="12"/><path d="M17.5 8.5 21 12l-3.5 3.5"/></svg>',
   walking: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12.5" cy="3.6" r="1.7" fill="currentColor" stroke="none"/><path d="M12 5.6 10.8 11"/><path d="M12 6.8 14.5 9.8"/><path d="M12 6.8 9.3 9.5"/><path d="M10.8 11 14 14 16 18.5"/><path d="M10.8 11 8 13.5 5.5 17.5"/></svg>',
+  lightbulb: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 21.5h4"/><path d="M12 2.5a6.5 6.5 0 0 0-3.9 11.7c.6.5 1 1.2 1 2V16.5h5.8v-.3c0-.8.4-1.5 1-2A6.5 6.5 0 0 0 12 2.5z"/></svg>',
   lineChart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5,17 9,11 13,14.5 20.5,6"/><polyline points="15,6 20.5,6 20.5,11.5"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 7 12l8 7"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
@@ -2255,6 +2280,26 @@ let backupRestoreFile=null, backupRestoreBusy=false, backupRestoreError='', back
 let usingFeed=true, usingFeedLog=[];
 // feedRecords is now a FARM-WIDE ledger, not per-animal: [{id, feed_type, sack_price, sacks, start_date, end_date}]
 // Cost per animal is calculated (see feedCostTotal), never entered directly — see mockup Screen 19.
+// farm_settings.farm_location is a TEXT column, so a captured {lat,lng}
+// comes back from Supabase as a JSON string — reading .lat off the string
+// is what showed "undefined, undefined". Parse it back to an object; keep
+// any older plain-text value (e.g. "Somerset") as-is; anything else = none.
+function normaliseFarmLocation(v){
+  if(v==null || v==='') return null;
+  if(typeof v==='object') return (v.lat!=null && v.lng!=null) ? v : null;
+  if(typeof v==='string'){
+    const t=v.trim();
+    if(!t) return null;
+    if(t.startsWith('{')){ try{ const o=JSON.parse(t); return (o && o.lat!=null && o.lng!=null) ? o : null; }catch(e){ return null; } }
+    return t;
+  }
+  return null;
+}
+function farmLocationText(){
+  const v=normaliseFarmLocation(farmSettings.farm_location);
+  if(!v) return '';
+  return typeof v==='string' ? v : v.lat+', '+v.lng;
+}
 let farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:'', use_ai:false, groq_api_key:null};
 // Per-signed-in-user, not per-farm. Use AI?/the Groq key used to live
 // here (one key, one quota, per person) but moved to farmSettings —
@@ -2552,6 +2597,7 @@ async function loadAll(){
     medicineTypes= mt?JSON.parse(mt):[]; medicineRecords= mr?JSON.parse(mr):[]; injuryRecords= ir?JSON.parse(ir):[];
     ensureTbTestMedicineType();
     farmSettings= fs?JSON.parse(fs):{typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:'', test_data_mode:'cleared'};
+    farmSettings.farm_location=normaliseFarmLocation(farmSettings.farm_location);
     if(farmSettings.typical_gestation_days==null) farmSettings.typical_gestation_days=283;
     if(farmSettings.manage_fodder_spend==null) farmSettings.manage_fodder_spend=true;
     if(farmSettings.cph==null) farmSettings.cph='';
@@ -2576,6 +2622,8 @@ async function loadAll(){
     breedingRecords= br?JSON.parse(br):[];
     const bph=await safeGet('local:breedpricehistory');
     breedPriceHistory= bph?JSON.parse(bph):[];
+    const fol=await safeGet('local:farmopportunities');
+    try{ farmOpportunitiesLatest= fol?JSON.parse(fol):null; }catch(e){ farmOpportunitiesLatest=null; }
     const fdl=await safeGet('local:farmdetails');
     farmDetails= fdl?JSON.parse(fdl):[];
   }
@@ -2918,6 +2966,7 @@ async function persistAll(){
   await safeSet('local:breedingrecords', JSON.stringify(breedingRecords));
   await safeSet('local:breedpricehistory', JSON.stringify(breedPriceHistory));
   await safeSet('local:farmdetails', JSON.stringify(farmDetails));
+  await safeSet('local:farmopportunities', JSON.stringify(farmOpportunitiesLatest));
   await safeSet('local:devicefarmcode', deviceFarmCode||'');
   await safeSet('local:devicefarmname', deviceFarmName||'');
   await safeSet('local:currentfarmerid', currentFarmerId||'');
@@ -4953,7 +5002,7 @@ function renderReports(){
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Reports</span><span></span></div>
     <div class="body bigtext" style="padding-top:2px;">
       <div class="icongrid" style="padding-top:3px;">
-        ${tile('rep-insights','lineChart','Insights',{color:'var(--primary)'})}
+        ${tile('rep-insights','lightbulb','Insights',{color:'var(--primary)'})}
         ${tile('rep-donetoday','clipboard','Done today',{color:'var(--primary)'})}
         ${tile('rep-vetspend','syringe','Vet spend<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
         ${tile('rep-feedcost','knifefork','Fodder cost<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
@@ -5031,6 +5080,496 @@ function renderAsk(){
       {id:'ask-home', icon:'home', label:'Home', home:true},
     ])}`;
 }
+// =====================================================================
+// Farm Opportunities / Farm Intelligence (Reports > Insights)
+// =====================================================================
+// Looks at everything aBC already knows about the farm and asks Groq to
+// find opportunities the farmer may not have considered: funding, savings,
+// productivity, animal health, environment, compliance and anything else.
+//
+// Deliberately split into a UI-free engine — analyseFarmOpportunities() —
+// so the same thing can later drive scheduled checks, "What's new?",
+// application drafting, notifications etc. Nothing about any particular
+// scheme is hard-coded here; it all comes from live research each run.
+//
+// Two Groq calls per run:
+//   1. RESEARCH  — groq/compound (built-in web search). Returns research
+//      notes plus the pages it actually looked at.
+//   2. STRUCTURE — gpt-oss-120b with a strict JSON schema, turning farm
+//      data + research into opportunity cards.
+// Then plain code checks the result: any source link that wasn't among the
+// pages the search actually found is removed (never trust a model-typed
+// URL), statuses are forced to the four allowed values, "% chance"
+// wording is stripped, and the list is capped.
+// If web search isn't available on the key, it still runs step 2 on the
+// model's own knowledge — clearly flagged, with no sources shown.
+let farmOpportunitiesLatest=null; // latest saved run for this farm: {id, created_at, created_by_name, web_research, models, location, result}
+let oppRunning=false, oppProgress='', oppError=null, oppStartedAt=null;
+let oppOpen=null; // {id, section:'why'|'todo'}
+let oppShowLow=false;
+
+const OPP_STATUS={
+  strong_match:{label:'Strong match', color:'var(--green)', rank:0},
+  potential_match:{label:'Potential match', color:'var(--amber)', rank:1},
+  needs_more_information:{label:'Needs more info', color:'var(--grey)', rank:2},
+  low_relevance:{label:'Low relevance', color:'var(--grey-light)', rank:3},
+};
+const OPP_CATEGORIES=['funding','save_money','productivity','animal_health','environment','compliance','diversification','other'];
+const OPP_GROUPS=[
+  {key:'funding', label:'Funding', cats:['funding']},
+  {key:'save', label:'Save money', cats:['save_money']},
+  {key:'productivity', label:'Improve productivity', cats:['productivity','animal_health']},
+  {key:'other', label:'Other', cats:['environment','compliance','diversification','other']},
+];
+function oppGroupKey(o){ const g=OPP_GROUPS.find(g=>g.cats.includes(o.category)); return g?g.key:'other'; }
+
+// ---- 1. Where is the farm? ----
+// Coordinates -> country/county/council via postcodes.io (free, no key,
+// works from the phone). Country matters most: England, Scotland, Wales
+// and NI run completely different schemes.
+async function reverseGeocodeFarm(){
+  const loc=normaliseFarmLocation(farmSettings.farm_location);
+  if(!loc) return {known:false, note:'No farm location recorded in aBC.'};
+  if(typeof loc==='string') return {known:true, source:'text entered by the farmer', description:loc};
+  try{
+    const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(), 8000);
+    const r=await fetch('https://api.postcodes.io/postcodes?lon='+encodeURIComponent(loc.lng)+'&lat='+encodeURIComponent(loc.lat)+'&limit=1&widesearch=true', {signal:ctl.signal});
+    clearTimeout(t);
+    const j=await r.json();
+    const p=j && j.result && j.result[0];
+    if(!p) return {known:true, source:'coordinates only (no nearby postcode found)', latitude:loc.lat, longitude:loc.lng};
+    return {known:true, source:'nearest postcode to the recorded coordinates (postcodes.io)',
+      country:p.country||null, region:p.region||null, county:p.admin_county||null, local_authority:p.admin_district||null,
+      parish:p.parish||null, postcode_district:p.outcode||null, latitude:loc.lat, longitude:loc.lng};
+  }catch(e){
+    return {known:true, source:'coordinates only (location lookup failed)', latitude:loc.lat, longitude:loc.lng};
+  }
+}
+
+// ---- 2. Farm context ----
+// A summary built for this purpose — patterns and totals rather than a line
+// per animal (keeps it small enough for Groq's free tier), and nothing
+// identifying: no CPH, tags, EIDs, animal or people names.
+function buildOpportunityFarmContext(location){
+  const now=new Date(), DAY=864e5;
+  const yearAgo=new Date(now); yearAgo.setFullYear(yearAgo.getFullYear()-1);
+  const inLastYear=d=>!!d && new Date(d)>=yearAgo;
+  const avg=arr=>arr.length? +(arr.reduce((s,x)=>s+x,0)/arr.length).toFixed(2) : null;
+  const round=(n,dp=2)=>n==null?null:+(+n).toFixed(dp);
+  const ctx={ today: todayStr(), location, notes_on_this_data:[
+    'Everything below is recorded in the farmer\u2019s aBC app (KNOWN). Anything not listed is UNKNOWN \u2014 not zero or absent.',
+    'Figures cover what has been entered in aBC, which may not be the whole farm or its whole history.'
+  ]};
+  try{
+    const active=animals.filter(a=>a.status==='active');
+    const groups={};
+    active.forEach(a=>{
+      const b=breeds.find(x=>x.id===a.breed_id);
+      const key=b?b.name:'Unknown breed';
+      const g=groups[key]||(groups[key]={breed:key, species:(b&&b.species)||'cattle', count:0, female:0, male:0, age_under_12m:0, age_12_to_24m:0, age_over_24m:0, age_unknown:0, w:[], bcs:[], adg:[]});
+      g.count++; if(a.sex==='F') g.female++; else g.male++;
+      const m=a.birth_date?(now-new Date(a.birth_date))/(30.44*DAY):null;
+      if(m==null) g.age_unknown++; else if(m<12) g.age_under_12m++; else if(m<24) g.age_12_to_24m++; else g.age_over_24m++;
+      const ws=weights.filter(w=>w.animal_id===a.id && w.weight_kg!=null).sort((x,y)=>new Date(x.recorded_at)-new Date(y.recorded_at));
+      if(ws.length) g.w.push(ws[ws.length-1].weight_kg);
+      const lw=lastWeightRecord(a.id); if(lw && lw.bcs!=null) g.bcs.push(lw.bcs);
+      const recent=ws.filter(w=>new Date(w.recorded_at)>=new Date(now-180*DAY));
+      if(recent.length>=2){
+        const days=(new Date(recent[recent.length-1].recorded_at)-new Date(recent[0].recorded_at))/DAY;
+        if(days>=14) g.adg.push((recent[recent.length-1].weight_kg-recent[0].weight_kg)/days);
+      }
+    });
+    ctx.livestock={
+      active_animals:active.length,
+      groups:Object.values(groups).map(g=>{
+        const mean=avg(g.adg);
+        return { breed:g.breed, species:g.species, count:g.count, female:g.female, male:g.male,
+          age_under_12m:g.age_under_12m, age_12_to_24m:g.age_12_to_24m, age_over_24m:g.age_over_24m, age_unknown:g.age_unknown,
+          animals_with_a_weight:g.w.length, avg_latest_weight_kg:avg(g.w),
+          animals_with_bcs:g.bcs.length, avg_bcs_1to5:avg(g.bcs), bcs_below_2_5:g.bcs.filter(x=>x<2.5).length, bcs_above_4:g.bcs.filter(x=>x>4).length,
+          animals_with_gain_data_last_180d:g.adg.length, avg_daily_gain_kg_last_180d:round(mean,3),
+          lowest_daily_gain_kg:g.adg.length?round(Math.min(...g.adg),3):null, highest_daily_gain_kg:g.adg.length?round(Math.max(...g.adg),3):null,
+          animals_gaining_under_half_group_average: (mean && mean>0) ? g.adg.filter(x=>x<mean/2).length : null };
+      }),
+      active_animals_never_weighed: active.filter(a=>!weights.some(w=>w.animal_id===a.id && w.weight_kg!=null)).length,
+      active_animals_not_weighed_in_60_days: active.filter(a=>{ const lw=lastWeightRecord(a.id); return !lw || (now-new Date(lw.recorded_at))/DAY>60; }).length,
+    };
+  }catch(e){ ctx.livestock={error:'could not summarise livestock'}; }
+  try{
+    const meds=medicineRecords.filter(r=>inLastYear(r.administered_at) && !tbRecordKind(r));
+    const byReason={}, byProduct={}, perAnimal={};
+    meds.forEach(r=>{
+      const reason=medReasonLabel(r.reason); byReason[reason]=(byReason[reason]||0)+1;
+      const p=r.product_name||'Unnamed'; const bp=byProduct[p]||(byProduct[p]={product:p, treatments:0, cost_gbp:0}); bp.treatments++; bp.cost_gbp+= (r.cost||0);
+      perAnimal[r.animal_id]=(perAnimal[r.animal_id]||0)+1;
+    });
+    const vetCost=meds.filter(r=>{ const fv=farmersVets.find(p=>p.id===r.farmer_vet_id); return fv && fv.role==='vet'; }).reduce((s,r)=>s+(r.cost||0),0);
+    ctx.animal_health_last_12_months={
+      treatments:meds.length, treatment_cost_gbp:round(meds.reduce((s,r)=>s+(r.cost||0),0)), of_which_given_by_vet_gbp:round(vetCost),
+      treatments_by_reason:byReason,
+      top_products:Object.values(byProduct).sort((a,b)=>b.treatments-a.treatments).slice(0,8).map(p=>({...p, cost_gbp:round(p.cost_gbp)})),
+      animals_treated_3_or_more_times:Object.values(perAnimal).filter(n=>n>=3).length,
+      injuries_recorded:injuryRecords.filter(r=>inLastYear(r.created_at||r.recorded_at||r.date)).length,
+      animals_with_open_injury:animals.filter(a=>a.status==='active' && worstOpenInjury(a)).length,
+      tb_testing_interval_months:tbTestIntervalMonths(),
+      active_animals_tb_test_overdue:animals.filter(a=>a.status==='active' && tbTestOverdue(a.id)).length,
+      active_animals_in_medicine_withdrawal:animals.filter(a=>a.status==='active' && activeWithdrawal(a.id)).length,
+    };
+  }catch(e){ ctx.animal_health_last_12_months={error:'could not summarise'}; }
+  try{
+    const exits=animals.filter(a=>a.status!=='active' && inLastYear(a.realized_value_date));
+    const byStatus={}; exits.forEach(a=>{ byStatus[a.status]=(byStatus[a.status]||0)+1; });
+    ctx.sales_and_losses_last_12_months={ animals_leaving_by_reason:byStatus,
+      realised_profit_loss_gbp:round(exits.reduce((s,a)=>s+(a.realized_value||0),0)),
+      animals_leaving_before_aBC_recorded_a_value:'not included' };
+    const feed12=feedRecords.filter(r=>!r.deleted_at && inLastYear(r.purchased_at||r.date||r.created_at));
+    ctx.costs_last_12_months={ fodder_gbp:round(feed12.reduce((s,r)=>s+feedRecordCost(r),0)),
+      fodder_types:[...new Set(feed12.map(r=>{ const t=feedTypes.find(x=>x.id===r.feed_type_id); return t?t.name:null; }).filter(Boolean))].slice(0,10) };
+    const br=breedingRecords.filter(r=>inLastYear(r.date||r.created_at)); const brBy={}; br.forEach(r=>{ brBy[r.field]=(brBy[r.field]||0)+1; });
+    ctx.breeding_records_last_12_months=brBy;
+    const mv=moveRecords.filter(r=>inLastYear(r.date));
+    ctx.moves_last_12_months={ moves:mv.length, off_farm:mv.filter(r=>r.direction==='off').length, on_farm_field_moves:mv.filter(r=>r.direction==='in').length };
+    const firstDates=[...weights.map(w=>w.recorded_at), ...medicineRecords.map(r=>r.administered_at)].filter(Boolean).sort();
+    ctx.aBC_records_start=firstDates.length?firstDates[0].slice(0,10):null;
+  }catch(e){}
+  ctx.farm_details_entered_by_farmer = farmDetails.map(d=>({ ref:d.id, type:d.category, name:d.name, details:d.details||'' }));
+  if(!farmDetails.length) ctx.farm_details_entered_by_farmer_note='The farmer has not described any fields, buildings, machinery or other resources yet \u2014 land, soil, buildings, hedges etc. are all UNKNOWN.';
+  return ctx;
+}
+
+// ---- Groq transport for this feature ----
+// Like callGroq, but returns the whole response (needed for the search
+// results compound used) and can try a richer request then a simpler one
+// on a 400 (e.g. strict JSON schema not supported by that model).
+async function groqChatWithFallbacks(models, makeBodies, timeoutMs){
+  const apiKey=farmSettings.groq_api_key;
+  if(!apiKey) throw new Error('No Groq API key set');
+  let lastErr;
+  for(const model of models){
+    const bodies=makeBodies(model);
+    for(let i=0;i<bodies.length;i++){
+      const controller=new AbortController();
+      const tid=setTimeout(()=>controller.abort(), timeoutMs);
+      let resp;
+      try{
+        resp=await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method:'POST', headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+apiKey},
+          body:JSON.stringify(bodies[i]), signal:controller.signal });
+      }catch(e){
+        clearTimeout(tid);
+        lastErr = e.name==='AbortError' ? Object.assign(new Error(model+' took longer than '+Math.round(timeoutMs/1000)+'s'),{status:'timeout'}) : e;
+        if(e.name!=='AbortError') throw lastErr;
+        break; // next model
+      }
+      clearTimeout(tid);
+      if(resp.ok) return {model, json:await resp.json()};
+      const txt=await resp.text().catch(()=> '');
+      lastErr=Object.assign(new Error('Groq ('+model+') '+resp.status+': '+txt.slice(0,220).trim()), {status:resp.status});
+      if(resp.status===401 || resp.status===403) throw lastErr;
+      if(resp.status===400 && i<bodies.length-1) continue; // try the simpler request
+      break; // 404/413/429/5xx/400: next model
+    }
+  }
+  throw lastErr;
+}
+function extractUrls(text){
+  const out=new Set();
+  (String(text||'').match(/https?:\/\/[^\s"'<>\)\]\\]+/g)||[]).forEach(u=>out.add(u.replace(/[.,;:]+$/,'')));
+  return [...out];
+}
+function normUrl(u){ try{ const x=new URL(u); return (x.hostname.replace(/^www\./,'')+x.pathname.replace(/\/+$/,'')).toLowerCase(); }catch(e){ return null; } }
+
+const OPP_SCHEMA={
+  type:'object', additionalProperties:false,
+  required:['headline','opportunities','data_gaps'],
+  properties:{
+    headline:{type:'string'},
+    data_gaps:{type:'array', items:{type:'object', additionalProperties:false, required:['item','why','farm_detail_category'],
+      properties:{ item:{type:'string'}, why:{type:'string'}, farm_detail_category:{type:'string', enum:['field','building','machinery','other','none']} }}},
+    opportunities:{type:'array', items:{type:'object', additionalProperties:false,
+      required:['title','category','section','status','summary','why_relevant','known_farm_evidence','inferred','unknown_or_missing','potential_benefit','estimated_value','estimated_value_basis','actions','source_name','source_url','source_date','confidence','requires_official_confirmation','involves_application'],
+      properties:{
+        title:{type:'string'}, category:{type:'string', enum:OPP_CATEGORIES}, section:{type:'string', enum:['main','other']},
+        status:{type:'string', enum:Object.keys(OPP_STATUS)}, summary:{type:'string'},
+        why_relevant:{type:'array', items:{type:'string'}}, known_farm_evidence:{type:'array', items:{type:'string'}}, inferred:{type:'array', items:{type:'string'}},
+        unknown_or_missing:{type:'array', items:{type:'object', additionalProperties:false, required:['item','farm_detail_category'],
+          properties:{ item:{type:'string'}, farm_detail_category:{type:'string', enum:['field','building','machinery','other','none']} }}},
+        potential_benefit:{type:'string'}, estimated_value:{type:['string','null']}, estimated_value_basis:{type:['string','null']},
+        actions:{type:'array', items:{type:'string'}},
+        source_name:{type:['string','null']}, source_url:{type:['string','null']}, source_date:{type:['string','null']},
+        confidence:{type:'string', enum:['high','medium','low']}, requires_official_confirmation:{type:'boolean'}, involves_application:{type:'boolean'},
+      }}},
+  },
+};
+
+// ---- The engine ----
+// farmContext: from buildOpportunityFarmContext(). opts.onProgress(text).
+// Resolves {result, webResearch, models, researchUrls}.
+async function analyseFarmOpportunities(farmContext, opts){
+  opts=opts||{};
+  const progress=t=>{ if(opts.onProgress) opts.onProgress(t); };
+  const ctxJson=JSON.stringify(farmContext);
+  const where=farmContext.location && (farmContext.location.country || farmContext.location.description) || 'unknown (no location recorded)';
+  const models=[];
+
+  // Step 1: research with web search.
+  progress('Searching for current schemes and opportunities\u2026 this usually takes 30\u201390 seconds');
+  let research='', researchUrls=[], webResearch=false;
+  try{
+    const researchPrompt=
+`You are an experienced UK agricultural adviser researching opportunities for ONE specific livestock farm. Today is ${farmContext.today}.
+Farm jurisdiction: ${where}. Do NOT assume schemes from one UK nation apply in another (England, Scotland, Wales and Northern Ireland differ). Do not invent geographic eligibility.
+
+FARM DATA (the farmer's own records; anything not listed is unknown):
+${ctxJson}
+
+TASK: Use web search to find CURRENT opportunities (open now, or opening/likely within the next 12 months) relevant to THIS farm. Search broadly \u2014 not just grants: national schemes and payments for land management, environment, capital items, productivity, animal health and welfare; local/regional, county, National Park, protected-landscape, catchment and water-company schemes; energy and renewables; plus practical cost-saving or productivity angles suggested by the farm's own figures. Look for opportunities created by COMBINATIONS of farm facts. Prefer official sources (gov.uk, defra, rural payments agencies, gov.scot, ruralpayments.org, gov.wales, daera-ni.gov.uk, local councils, national parks, official funding bodies); commercial sites only for discovery.
+Never put personal identifiers in search queries.
+
+OUTPUT research notes, at most ~900 words. One short block per finding: name; jurisdiction; open/closed/opening date; who is eligible; key criteria; published payment rates or amounts (only as published); the exact source URL you read; date published/updated if shown. Say plainly when something could not be confirmed.`;
+    const r=await groqChatWithFallbacks(['groq/compound','groq/compound-mini'], model=>[
+      {model, messages:[{role:'user', content:researchPrompt}], temperature:0.2, max_completion_tokens:2500},
+    ], 150000);
+    const msg=r.json && r.json.choices && r.json.choices[0] && r.json.choices[0].message || {};
+    research=(msg.content||'').trim();
+    researchUrls=[...new Set([...extractUrls(JSON.stringify(msg.executed_tools||[])), ...extractUrls(JSON.stringify(r.json.citations||[])), ...extractUrls(research)])];
+    // Only count it as real web research if the search actually ran.
+    webResearch = !!research && (Array.isArray(msg.executed_tools) ? msg.executed_tools.length>0 : researchUrls.length>0);
+    models.push(r.model);
+  }catch(e){
+    if(e.status===401 || e.status===403) throw e;
+    console.warn('Opportunity research step failed, continuing without web research:', e.message);
+    research=''; researchUrls=[]; webResearch=false;
+  }
+
+  // Step 2: structure into opportunity cards.
+  progress('Checking what applies to your farm and organising the results\u2026');
+  const structurePrompt=
+`You are an experienced UK agricultural adviser looking at ONE livestock farm as a whole. Using the farm data and ${webResearch?'the research notes':'your own knowledge (NO current web research was available)'}, identify opportunities the farmer may not have considered and return them in the JSON schema.
+
+RULES \u2014 follow strictly:
+- Separate KNOWN (explicitly in the farm data) from INFERRED (your reasonable interpretation) from UNKNOWN (needs confirming). Never present an inference as a fact. E.g. known "280m altitude" \u2192 inferred "may indicate upland characteristics", never "eligible for an upland scheme".
+- known_farm_evidence: only facts actually present in the farm data, stated plainly (e.g. "Barn recorded as poor condition, roof leaks"). No invented numbers.
+- Status: strong_match = known facts appear to meet the published criteria (still subject to confirmation); potential_match = some match but key eligibility info missing; needs_more_information = could be relevant but aBC lacks the facts; low_relevance = considered but a poor fit.
+- NEVER give a percentage or numerical chance of success. NEVER say the farmer will receive funding.
+- Money: only use payment rates/amounts that appear in the research notes, and say where from. Otherwise estimated_value = null and potential_benefit describes the benefit in words (labour saved, lower costs, better sale value, reduced risk...). If you estimate, say it is an estimate and give the basis.
+- Do NOT restrict to grants. Include opportunities from the farm's own records (e.g. low weight gain in a group, repeat treatments, missing records, TB tests overdue) and from combinations of facts.
+- ${webResearch?'source_url MUST be copied exactly from the ALLOWED SOURCE URLS list, or null. source_name = organisation/page name. source_date = date shown in the notes or null.':'No research was available, so source_name, source_url and source_date MUST be null. Phrase any scheme as "check whether it is currently open".'}
+- Jurisdiction: ${where}. Never apply one UK nation's scheme to another.
+- unknown_or_missing: only information that would materially change THIS opportunity; set farm_detail_category to where the farmer could record it in aBC (field, building, machinery, other) or "none".
+- actions: 1\u20134 short, concrete next steps.
+- Quality over quantity: at most 8 with section "main" (most relevant, valuable, actionable, current first), up to 3 less-obvious ones with section "other", and up to 3 low_relevance.
+- data_gaps: up to 5 pieces of farm information that would most improve future analysis (e.g. total land area, tenancy, soil types) \u2014 only if genuinely missing from the farm data.
+- headline: one friendly sentence summarising what you found.
+- Plain UK English a farmer would use. Short sentences.
+
+FARM DATA:
+${ctxJson}
+
+${webResearch?'RESEARCH NOTES:\n'+research+'\n\nALLOWED SOURCE URLS:\n'+researchUrls.join('\n'):'RESEARCH NOTES: none available.'}`;
+  const r2=await groqChatWithFallbacks(['openai/gpt-oss-120b','openai/gpt-oss-20b'], model=>[
+    {model, messages:[{role:'user', content:structurePrompt}], temperature:0.2, max_completion_tokens:6000, reasoning_effort:'medium',
+      response_format:{type:'json_schema', json_schema:{name:'farm_opportunities', strict:true, schema:OPP_SCHEMA}}},
+    {model, messages:[{role:'user', content:structurePrompt+'\n\nReturn ONLY a JSON object with keys headline, opportunities, data_gaps as described. No other text.'}], temperature:0.2, max_completion_tokens:6000,
+      response_format:{type:'json_object'}},
+  ], 120000);
+  models.push(r2.model);
+  const text=r2.json && r2.json.choices && r2.json.choices[0] && r2.json.choices[0].message && r2.json.choices[0].message.content;
+  if(!text) throw new Error('Groq returned no results');
+  let raw;
+  try{ raw=parseAiJson(text); }catch(e){ throw new Error('Groq\u2019s answer couldn\u2019t be read as data'); }
+  return { result:validateOpportunities(raw, researchUrls, webResearch), webResearch, models, researchUrls };
+}
+
+// ---- Plain-code checks on whatever the model returned ----
+function validateOpportunities(raw, researchUrls, webResearch){
+  const allowed=new Map(); (researchUrls||[]).forEach(u=>{ const n=normUrl(u); if(n) allowed.set(n,u); });
+  const arr=x=>Array.isArray(x)?x.filter(s=>typeof s==='string' && s.trim()).map(s=>s.trim()):[];
+  const noOdds=s=>typeof s==='string' ? s.replace(/[^.]*\b\d{1,3}\s*%\s*(chance|likelihood|probability|likely)[^.]*\.?/gi,'').trim() : s;
+  const cats=['field','building','machinery','other','none'];
+  const opps=(Array.isArray(raw && raw.opportunities)?raw.opportunities:[]).map((o,i)=>{
+    if(!o || typeof o!=='object' || !o.title) return null;
+    let url=typeof o.source_url==='string'?o.source_url.trim():null, verified=false;
+    if(url){
+      const n=normUrl(url);
+      if(webResearch && n && allowed.has(n)){ url=allowed.get(n); verified=true; }
+      else { url=null; }
+    }
+    return {
+      id:'o'+i,
+      title:String(o.title).slice(0,120),
+      category:OPP_CATEGORIES.includes(o.category)?o.category:'other',
+      section:o.section==='other'?'other':'main',
+      status:OPP_STATUS[o.status]?o.status:'needs_more_information',
+      summary:noOdds(o.summary||''),
+      why_relevant:arr(o.why_relevant).map(noOdds),
+      known_farm_evidence:arr(o.known_farm_evidence),
+      inferred:arr(o.inferred).map(noOdds),
+      unknown_or_missing:(Array.isArray(o.unknown_or_missing)?o.unknown_or_missing:[]).map(u=>typeof u==='string'?{item:u, farm_detail_category:'none'}:u)
+        .filter(u=>u && u.item).map(u=>({item:String(u.item), farm_detail_category:cats.includes(u.farm_detail_category)?u.farm_detail_category:'none'})),
+      potential_benefit:noOdds(o.potential_benefit||''),
+      estimated_value:(o.estimated_value && String(o.estimated_value).trim())||null,
+      estimated_value_basis:(o.estimated_value_basis && String(o.estimated_value_basis).trim())||null,
+      actions:arr(o.actions),
+      source_name:(webResearch && o.source_name)||null,
+      source_url:url, source_verified:verified,
+      source_date:(webResearch && o.source_date)||null,
+      confidence:['high','medium','low'].includes(o.confidence)?o.confidence:'low',
+      requires_official_confirmation:o.requires_official_confirmation!==false,
+      involves_application:!!o.involves_application,
+    };
+  }).filter(Boolean);
+  const byRank=(a,b)=>OPP_STATUS[a.status].rank-OPP_STATUS[b.status].rank;
+  const low=opps.filter(o=>o.status==='low_relevance').slice(0,3);
+  const main=opps.filter(o=>o.status!=='low_relevance' && o.section==='main').sort(byRank).slice(0,8);
+  const other=opps.filter(o=>o.status!=='low_relevance' && o.section==='other').sort(byRank).slice(0,3);
+  const gaps=(Array.isArray(raw && raw.data_gaps)?raw.data_gaps:[]).map(g=>typeof g==='string'?{item:g, why:'', farm_detail_category:'other'}:g)
+    .filter(g=>g && g.item).slice(0,5).map(g=>({item:String(g.item), why:String(g.why||''), farm_detail_category:cats.includes(g.farm_detail_category)?g.farm_detail_category:'none'}));
+  return { headline:noOdds(String(raw && raw.headline || '')), opportunities:[...main, ...other, ...low], data_gaps:gaps };
+}
+
+// ---- Running it from the app ----
+function oppFriendlyError(e){
+  const m=(e && e.message)||String(e);
+  if(e && (e.status===401 || e.status===403)) return 'Groq rejected the API key. Check it in Settings > Use AI?';
+  if(e && e.status===429) return 'Groq\u2019s usage limit for this key has been reached. Wait a minute and try again \u2014 if it keeps happening, the free-tier daily limit may be used up for today.';
+  if(e && e.status===413) return 'There was too much farm data to send to Groq in one go on this key\u2019s plan.';
+  if(e && e.status==='timeout') return 'Groq took too long to answer. Try again \u2014 web research can be slow at busy times.';
+  if(/Failed to fetch|NetworkError|Load failed/i.test(m)) return 'Couldn\u2019t reach Groq \u2014 check the phone has signal and try again.';
+  return 'Something went wrong: '+m;
+}
+function setOppProgress(t){
+  oppProgress=t;
+  const el=document.getElementById('oppProgressText');
+  if(el) el.textContent=t;
+}
+async function runFarmOpportunities(){
+  if(oppRunning) return;
+  oppRunning=true; oppError=null; oppStartedAt=Date.now(); oppOpen=null;
+  setOppProgress('Working out where your farm is\u2026');
+  if(view==='reportDetail' && reportType==='insights') render();
+  try{
+    const location=await reverseGeocodeFarm();
+    const ctx=buildOpportunityFarmContext(location);
+    const res=await analyseFarmOpportunities(ctx, {onProgress:setOppProgress});
+    const rec={ id:uuid(), created_at:new Date().toISOString(),
+      created_by_name:(currentFarmerName&&currentFarmerName!=='Admin')?currentFarmerName:((authUser&&authUser.email)||currentFarmerName||'Admin'),
+      web_research:res.webResearch, models:res.models.join(' + '), location, result:res.result };
+    farmOpportunitiesLatest=rec;
+    await persistAll();
+    if(authFarmId) await queuedSync('farm_opportunities:'+rec.id, {table:'farm_opportunities', method:'insert', label:'farm opportunities', payload:{
+      id:rec.id, farm_id:authFarmId, created_at:rec.created_at, created_by_name:rec.created_by_name,
+      web_research:rec.web_research, models:rec.models, location:rec.location, result:rec.result }});
+    logMsg('Farm opportunities checked \u2014 '+rec.result.opportunities.filter(o=>o.status!=='low_relevance').length+' found'+(rec.web_research?'':' (no web research)')+'.');
+  }catch(e){
+    oppError=oppFriendlyError(e);
+    logMsg('Farm opportunities check failed: '+escapeHtml((e&&e.message)||String(e)));
+  }
+  oppRunning=false; oppProgress=''; oppStartedAt=null;
+  if(view==='reportDetail' && reportType==='insights') render();
+}
+// Elapsed-seconds ticker while a run is on screen.
+setInterval(()=>{
+  if(!oppRunning || !oppStartedAt) return;
+  const el=document.getElementById('oppElapsed');
+  if(el) el.textContent=Math.round((Date.now()-oppStartedAt)/1000)+'s';
+}, 1000);
+
+function renderOpportunitiesBody(){
+  const aiReady=farmSettings.use_ai===true && !!farmSettings.groq_api_key;
+  const o=farmOpportunitiesLatest;
+  const intro=`<div style="font-size:14.5px;color:var(--grey);margin-bottom:12px;">aBC looks at everything you\u2019ve recorded \u2014 your animals, costs, health records and <a href="#" id="oppGoFarmDetails" style="color:var(--link);font-weight:700;">Farm details</a> \u2014 and searches for funding, savings and improvements that may suit your farm.</div>`;
+  let html=intro;
+  if(!aiReady){
+    html+=`<div class="warnbanner" style="display:block;">This needs AI turned on with a Groq API key. <a href="#" id="oppGoUseAi" style="color:inherit;font-weight:800;text-decoration:underline;">Turn it on in Settings</a>.</div>`;
+  }
+  if(oppRunning){
+    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:16px;text-align:center;margin-bottom:12px;background:#fafafa;">
+      <div class="oppspinner"></div>
+      <div id="oppProgressText" style="font-size:15px;font-weight:700;color:var(--ink);">${escapeHtml(oppProgress)}</div>
+      <div style="font-size:12.5px;color:var(--grey);margin-top:6px;">Keep this screen open \u00b7 <span id="oppElapsed">${oppStartedAt?Math.round((Date.now()-oppStartedAt)/1000):0}s</span></div>
+    </div>`;
+  }
+  if(oppError) html+=`<div style="background:var(--red-bg);color:var(--red);border-radius:8px;padding:10px 12px;font-size:14px;font-weight:700;margin-bottom:12px;">${escapeHtml(oppError)}</div>`;
+  if(!o){
+    if(!oppRunning) html+=`<div style="text-align:center;padding:24px 10px;color:var(--grey);">
+      <div style="width:52px;height:52px;margin:0 auto 10px;color:var(--primary);">${icon('lightbulb')}</div>
+      <div style="font-size:16px;">Tap <b>Analyse</b> below to check your farm.</div>
+      <div style="font-size:13px;margin-top:8px;">The more you add to Farm details (fields, buildings, machinery), the better the results.</div></div>`;
+    return html;
+  }
+  const r=o.result||{opportunities:[], data_gaps:[]};
+  const shown=r.opportunities.filter(x=>x.status!=='low_relevance');
+  const low=r.opportunities.filter(x=>x.status==='low_relevance');
+  const loc=o.location||{};
+  const locText=loc.country ? [loc.local_authority, loc.county, loc.country].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(', ') : (loc.description||'location not recorded');
+  html+=`
+    <div style="font-size:20px;font-weight:800;color:var(--ink);margin:4px 0 4px;">${shown.length?`We\u2019ve found ${shown.length} thing${shown.length===1?'':'s'} worth looking at.`:'Nothing strong found this time.'}</div>
+    ${r.headline?`<div style="font-size:14.5px;color:var(--ink);margin-bottom:6px;">${escapeHtml(r.headline)}</div>`:''}
+    <div style="font-size:12px;color:var(--grey);margin-bottom:10px;">Checked ${escapeHtml(fmtDateTimeShort(o.created_at))}${o.created_by_name?' by '+escapeHtml(o.created_by_name):''} \u00b7 ${escapeHtml(locText)}</div>
+    ${o.web_research?'':`<div class="warnbanner" style="display:block;font-size:13px;">Groq couldn\u2019t search the web on this run, so these are based on the AI\u2019s general knowledge only \u2014 schemes may have changed or closed. Try Analyse again later.</div>`}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 14px;">
+      ${OPP_GROUPS.map(g=>{
+        const n=shown.filter(x=>oppGroupKey(x)===g.key).length;
+        return `<button data-oppjump="${g.key}" ${n?'':'disabled'} style="border:1px solid var(--line);border-radius:10px;background:${n?'#fff':'#f5f5f5'};padding:12px 10px;text-align:left;cursor:${n?'pointer':'default'};">
+          <div style="font-size:15px;font-weight:800;color:${n?'var(--ink)':'var(--grey)'};">${g.label}</div>
+          <div style="font-size:13px;color:${n?'var(--primary)':'var(--grey)'};font-weight:700;margin-top:2px;">${n} opportunit${n===1?'y':'ies'}</div>
+        </button>`;
+      }).join('')}
+    </div>
+    ${OPP_GROUPS.map(g=>{
+      const items=shown.filter(x=>oppGroupKey(x)===g.key);
+      if(!items.length) return '';
+      return `<div id="oppgroup-${g.key}" style="font-size:12px;font-weight:800;color:var(--grey);text-transform:uppercase;margin:16px 0 6px;">${g.label}</div>${items.map(oppCardHtml).join('')}`;
+    }).join('')}
+    ${low.length?`
+      <button id="oppToggleLow" class="damagebar" style="background:var(--grey-light);font-size:14px;padding:10px 12px;margin-top:16px;">
+        <span>Also considered \u2014 low relevance (${low.length})</span><span style="width:18px;height:18px;">${icon(oppShowLow?'triangleDown':'triangleRight')}</span>
+      </button>
+      ${oppShowLow?low.map(oppCardHtml).join(''):''}`:''}
+    ${r.data_gaps && r.data_gaps.length?`
+      <div style="font-size:12px;font-weight:800;color:var(--grey);text-transform:uppercase;margin:18px 0 6px;">Tell aBC more to find more</div>
+      ${r.data_gaps.map(g=>`
+        <div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line);">
+          <div style="flex:1;font-size:14px;"><b>${escapeHtml(g.item)}</b>${g.why?`<div style="font-size:12.5px;color:var(--grey);margin-top:2px;">${escapeHtml(g.why)}</div>`:''}</div>
+          <button data-oppaddinfo="${g.farm_detail_category==='none'?'other':g.farm_detail_category}" data-oppitem="${escapeHtml(g.item)}" style="flex-shrink:0;border:1px solid var(--green);color:var(--green);background:#fff;border-radius:16px;padding:4px 10px;font-size:13px;font-weight:700;cursor:pointer;">+ Add</button>
+        </div>`).join('')}`:''}
+    <div style="font-size:12px;color:var(--grey);margin-top:18px;line-height:1.5;">aBC doesn\u2019t guarantee funding, savings or eligibility. Always check the official scheme rules before applying or spending money. Results come from AI and may contain mistakes.</div>`;
+  return html;
+}
+function oppCardHtml(x){
+  const st=OPP_STATUS[x.status];
+  const whyOpen=oppOpen && oppOpen.id===x.id && oppOpen.section==='why';
+  const todoOpen=oppOpen && oppOpen.id===x.id && oppOpen.section==='todo';
+  const list=(items, mark, color)=>items.map(s=>`<div style="display:flex;gap:8px;font-size:13.5px;padding:2px 0;"><span style="width:14px;flex-shrink:0;font-weight:800;color:${color};text-align:center;">${mark}</span><span style="flex:1;">${escapeHtml(s)}</span></div>`).join('');
+  const sub=t=>`<div style="font-size:11px;font-weight:800;color:var(--grey);text-transform:uppercase;margin:10px 0 3px;">${t}</div>`;
+  const btn=(section,label,open)=>`<button data-oppopen="${x.id}" data-oppsection="${section}" style="flex:1;border:1px solid ${open?'var(--primary)':'var(--line)'};background:${open?'var(--primary)':'#fff'};color:${open?'#fff':'var(--ink)'};border-radius:8px;padding:8px 6px;font-size:13.5px;font-weight:700;cursor:pointer;">${label}</button>`;
+  return `
+  <div style="border:1px solid var(--line);border-left:5px solid ${st.color};border-radius:10px;padding:12px;margin-bottom:10px;background:#fff;">
+    <div style="display:flex;gap:8px;align-items:flex-start;">
+      <div style="flex:1;font-size:16px;font-weight:800;color:var(--ink);">${escapeHtml(x.title)}</div>
+      <span style="flex-shrink:0;background:${st.color};color:#fff;border-radius:12px;padding:2px 8px;font-size:11.5px;font-weight:800;white-space:nowrap;">${st.label}</span>
+    </div>
+    <div style="font-size:14px;color:var(--ink);margin-top:6px;">${escapeHtml(x.summary)}</div>
+    ${x.potential_benefit?`<div style="font-size:13.5px;margin-top:6px;"><b style="color:var(--green);">Potential benefit:</b> ${escapeHtml(x.potential_benefit)}</div>`:''}
+    ${x.estimated_value?`<div style="font-size:13.5px;margin-top:3px;"><b>${escapeHtml(x.estimated_value)}</b>${x.estimated_value_basis?` <span style="color:var(--grey);font-size:12.5px;">(${escapeHtml(x.estimated_value_basis)})</span>`:''}</div>`:''}
+    <div style="display:flex;gap:8px;margin-top:10px;">${btn('why','Why?',whyOpen)}${btn('todo','What do I need to do?',todoOpen)}</div>
+    ${whyOpen?`<div style="margin-top:6px;">
+      ${x.why_relevant.length?sub('Why aBC is showing you this')+list(x.why_relevant,'\u2022','var(--ink)'):''}
+      ${x.known_farm_evidence.length?sub('What aBC knows')+list(x.known_farm_evidence,'\u2713','var(--green)'):''}
+      ${x.inferred.length?sub('What aBC is assuming')+list(x.inferred,'~','var(--amber)'):''}
+      ${x.unknown_or_missing.length?sub('Still unknown')+x.unknown_or_missing.map(u=>`<div style="display:flex;gap:8px;align-items:center;font-size:13.5px;padding:3px 0;"><span style="width:14px;flex-shrink:0;font-weight:800;color:var(--red);text-align:center;">?</span><span style="flex:1;">${escapeHtml(u.item)}</span>${u.farm_detail_category!=='none'?`<button data-oppaddinfo="${u.farm_detail_category}" data-oppitem="${escapeHtml(u.item)}" style="flex-shrink:0;border:1px solid var(--green);color:var(--green);background:#fff;border-radius:16px;padding:3px 9px;font-size:12.5px;font-weight:700;cursor:pointer;">+ Add</button>`:''}</div>`).join(''):''}
+      ${sub('Source')}
+      <div style="font-size:13.5px;">${x.source_url?`<a href="${escapeHtml(x.source_url)}" target="_blank" rel="noopener" style="color:var(--link);font-weight:700;word-break:break-word;">${escapeHtml(x.source_name||x.source_url)}</a>${x.source_date?` <span style="color:var(--grey);font-size:12.5px;">(${escapeHtml(x.source_date)})</span>`:''}`:`<span style="color:var(--grey);">${x.source_name?escapeHtml(x.source_name)+' \u2014 ':''}no verified link. Search for it on the official website.</span>`}</div>
+      <div style="font-size:12px;color:var(--grey);margin-top:6px;">AI confidence: ${x.confidence}${x.requires_official_confirmation?' \u00b7 needs official confirmation':''}</div>
+    </div>`:''}
+    ${todoOpen?`<div style="margin-top:6px;">
+      ${x.actions.length?x.actions.map((a,i)=>`<div style="display:flex;gap:8px;font-size:14px;padding:3px 0;"><span style="width:18px;flex-shrink:0;font-weight:800;color:var(--primary);">${i+1}.</span><span style="flex:1;">${escapeHtml(a)}</span></div>`).join(''):'<div style="font-size:13.5px;color:var(--grey);">No specific steps suggested.</div>'}
+      ${x.involves_application?`<div style="font-size:12.5px;color:var(--grey);margin-top:6px;">Help preparing the application is coming in a later update.</div>`:''}
+    </div>`:''}
+  </div>`;
+}
+
 function renderReportDetail(){
   const type=reportType;
   let title='Report', body='';
@@ -5254,14 +5793,8 @@ function renderReportDetail(){
       ${rows.length>sellShowCount?`<button id="sell-showmore" class="fullbtn ghost" style="margin-top:10px;">Show 30 more (${rows.length-sellShowCount} left)</button>`:''}`;
   }
   else if(type==='insights'){
-    // Placeholder — functionality to follow in the next build.
-    title='Insights';
-    body=`
-      <div style="text-align:center;padding:40px 16px;color:var(--grey);">
-        <div style="width:56px;height:56px;margin:0 auto 12px;color:var(--primary);">${icon('lineChart')}</div>
-        <div style="font-size:18px;font-weight:800;color:var(--ink);margin-bottom:6px;">Coming soon</div>
-        <div style="font-size:15px;">Insights about your farm will appear here.</div>
-      </div>`;
+    title='Farm Opportunities';
+    body=renderOpportunitiesBody();
   }
   else if(type==='realized'){
     title='Realised profit/loss (monthly)';
@@ -5296,6 +5829,10 @@ function renderReportDetail(){
     ] : type==='feedcost' ? [
       {id:'reportdetail-help', icon:'help', label:'Help'},
       {id:'reportdetail-feedfilter', icon:'filter', label:reportFeedTypeFilter?'Filter \u25cf':'Filter', primary:true},
+      {id:'reportdetail-home', icon:'home', label:'Home', home:true},
+    ] : type==='insights' ? [
+      {id:'reportdetail-help', icon:'help', label:'Help'},
+      ...((farmSettings.use_ai===true && farmSettings.groq_api_key && !oppRunning) ? [{id:'reportdetail-oppsrun', icon:'lightbulb', label:farmOpportunitiesLatest?'Re-check':'Analyse', primary:true}] : []),
       {id:'reportdetail-home', icon:'home', label:'Home', home:true},
     ] : [{id:'reportdetail-help', icon:'help', label:'Help'}, {id:'reportdetail-home', icon:'home', label:'Home', home:true}])}`;
 }
@@ -5856,7 +6393,10 @@ function renderHerd(){
     <div class="body bigtext">
       <div class="stickyhead">
         <div class="searchrow"><div class="searchwrap"><input type="text" id="searchInput" autocomplete="off" placeholder="Search tag, name, breed" value="${searchTerm.replace(/"/g,'&quot;')}">${searchClearMarkup('searchInput')}</div></div>
-        ${list.length?`<button id="herdSelectAllBtn" class="fullbtn ghost" style="margin-top:6px;">Select all (${list.length})</button>`:''}
+        ${list.length?(()=>{
+          const allOn = herdSelectMode && list.every(({a})=>herdSelectedIds.includes(a.id));
+          return `<button id="herdSelectAllBtn" class="fullbtn ghost" data-allselected="${allOn?1:0}" style="margin-top:6px;${allOn?'background:#e4e4e4;border-color:#c8c8c8;':''}">${allOn?'Deselect all':'Select all'} (${list.length})</button>`;
+        })():''}
       </div>
       ${list.length? `
       <table class="listtable">
@@ -7554,7 +8094,7 @@ function renderSettings(){
           </div></div>
 
           <div class="formrow"><label>Location</label><div class="formctrl" style="display:flex;gap:8px;align-items:center;">
-            <input type="text" id="farmLocationInput" placeholder="Not captured" readonly value="${farmSettings.farm_location?farmSettings.farm_location.lat+', '+farmSettings.farm_location.lng:''}" style="flex:1;background:#f3f3f3;color:var(--grey);">
+            <input type="text" id="farmLocationInput" placeholder="Not captured" readonly value="${escapeHtml(farmLocationText())}" style="flex:1;background:#f3f3f3;color:var(--grey);">
             <button id="farmLocationBtn" style="background:none;border:none;cursor:pointer;color:var(--ink);width:30px;height:30px;flex-shrink:0;padding:0;">${icon('pin')}</button>
           </div></div>
           <div class="field-error" id="err-farmlocation" style="padding:0 2px;"></div>
@@ -9786,8 +10326,14 @@ function wireView(){
       // Whatever rows are actually on screen right now — already reflects
       // the search term, status filter, and breed filter, so this only
       // ever selects what the farmer can currently see, not the whole herd.
-      herdSelectedIds=[...document.querySelectorAll('tr[data-openrow]')].map(row=>row.dataset.openrow);
-      herdSelectMode=herdSelectedIds.length>0;
+      // Toggles: if everything visible is already selected, a second tap
+      // clears the selection (and leaves select mode) instead.
+      if(herdSelectAllBtn.dataset.allselected==='1'){
+        herdSelectedIds=[]; herdSelectMode=false;
+      } else {
+        herdSelectedIds=[...document.querySelectorAll('tr[data-openrow]')].map(row=>row.dataset.openrow);
+        herdSelectMode=herdSelectedIds.length>0;
+      }
       render();
     };
     document.querySelectorAll('[data-sort]').forEach(el=>el.onclick=()=>{
@@ -10372,7 +10918,33 @@ function wireView(){
     const sellKeepSellEl=document.getElementById('sellKeepSell'), sellKeepKeepEl=document.getElementById('sellKeepKeep');
     if(sellKeepSellEl) sellKeepSellEl.onchange=()=>sellKeepSwitch('sellyes');
     if(sellKeepKeepEl) sellKeepKeepEl.onchange=()=>sellKeepSwitch('sellno');
+    if(reportType==='insights'){
+      const runBtn=document.getElementById('reportdetail-oppsrun');
+      if(runBtn) runBtn.onclick=()=>{ runFarmOpportunities(); };
+      document.querySelectorAll('[data-oppjump]').forEach(el=>el.onclick=()=>{ const t=document.getElementById('oppgroup-'+el.dataset.oppjump); if(t) t.scrollIntoView({block:'start', behavior:'smooth'}); });
+      document.querySelectorAll('[data-oppopen]').forEach(el=>el.onclick=()=>{
+        const id=el.dataset.oppopen, section=el.dataset.oppsection;
+        oppOpen = (oppOpen && oppOpen.id===id && oppOpen.section===section) ? null : {id, section};
+        const y=window.scrollY; render(); window.scrollTo(0,y);
+      });
+      const lowBtn=document.getElementById('oppToggleLow');
+      if(lowBtn) lowBtn.onclick=()=>{ oppShowLow=!oppShowLow; const y=window.scrollY; render(); window.scrollTo(0,y); };
+      // "+ Add" on anything unknown: straight into a new Farm details entry
+      // of the right type, with what's missing already started for them.
+      document.querySelectorAll('[data-oppaddinfo]').forEach(el=>el.onclick=()=>{
+        const cat=FARM_DETAIL_TYPES[el.dataset.oppaddinfo]?el.dataset.oppaddinfo:'other';
+        view='settings'; settingsOpenSection='farmdetails'; farmDetailsOpenCat=cat;
+        farmDetailEdit={id:null, category:cat, name:'', details:(el.dataset.oppitem||'')+': '};
+        render();
+        const t=document.getElementById('fdName'); if(t){ t.scrollIntoView({block:'center', behavior:'smooth'}); t.focus(); }
+      });
+      const goFd=document.getElementById('oppGoFarmDetails');
+      if(goFd) goFd.onclick=(e)=>{ e.preventDefault(); view='settings'; settingsOpenSection='farmdetails'; farmDetailEdit=null; render(); };
+      const goAi=document.getElementById('oppGoUseAi');
+      if(goAi) goAi.onclick=(e)=>{ e.preventDefault(); view='settings'; settingsOpenSection='useai'; render(); const t=document.getElementById('settingsSection-useai'); if(t) t.scrollIntoView({block:'start'}); };
+    }
     document.getElementById('reportdetail-help').onclick=()=>{
+      if(reportType==='insights'){ showInfoModal('\u2022 Tap Analyse to check your farm. aBC sends a summary of your records to Groq (your AI key) \u2014 counts, averages, costs and your Farm details, but no CPH, tag numbers, EIDs or names \u2014 and searches the web for current schemes and ideas.\n\n\u2022 Strong match: what you\u2019ve recorded appears to meet the published criteria. Potential match: some of it matches but key details are missing. Needs more info: could be relevant, but aBC doesn\u2019t know enough yet.\n\n\u2022 Why? shows what aBC knows, what it\u2019s assuming, what\u2019s unknown and the source. Tap + Add to fill a gap in Farm details, then Re-check.\n\n\u2022 Results are AI-generated and can be wrong. aBC never guarantees funding \u2014 always check the official rules before applying.'); return; }
       if(reportType==='sellyes' && herdSelectMode){ showInfoModal('Tap more animals to add them to the selection, then tap Move to send them all to market together. Tap the back arrow to cancel.'); return; }
       const base = reportType==='donetoday'
         ? 'Counts everything recorded against today\u2019s date across the whole farm \u2014 weighing, moves, medicine, injuries, damage, fodder, and animals added or exited. Tap a row to see exactly what made it up. Use "Done by" to filter to one farm hand \u2014 this only works for entries logged while that person was selected via Switch user, so make sure everyone logs in as themselves rather than leaving it on Admin.'
@@ -10992,7 +11564,7 @@ Rules:
       navigator.geolocation.getCurrentPosition(
         async(pos)=>{
           farmSettings.farm_location={lat:pos.coords.latitude.toFixed(4), lng:pos.coords.longitude.toFixed(4)};
-          document.getElementById('farmLocationInput').value=farmSettings.farm_location.lat+', '+farmSettings.farm_location.lng;
+          document.getElementById('farmLocationInput').value=farmLocationText();
           await persistAll();
           await syncFarmSettingsToSupabase();
           logMsg('Farm location saved.');
@@ -11232,6 +11804,19 @@ Rules:
       fdDetailsEl.focus();
     }, true);
     if(fdNameEl) fdNameEl.setAttribute('enterkeyhint','next');
+    // Go on the keyboard while typing Details saves the entry straight away
+    // (Si, 23 Sep) — so Enter no longer adds a new line in this box.
+    if(fdDetailsEl){
+      fdDetailsEl.setAttribute('enterkeyhint','go');
+      fdDetailsEl.parentElement.addEventListener('keydown', (e)=>{
+        if(e.target!==fdDetailsEl || e.isComposing || e.shiftKey) return;
+        if(e.key!=='Enter' && e.keyCode!==13) return;
+        e.preventDefault(); e.stopPropagation();
+        fdDetailsEl.blur();
+        const btn=document.getElementById('settings-farmdetail-save');
+        if(btn) btn.click();
+      }, true);
+    }
     if(fdDetailsEl) fdDetailsEl.oninput=fdLiveUpdate;
     const fdCancelBtn=document.getElementById('fdCancelBtn');
     if(fdCancelBtn) fdCancelBtn.onclick=()=>{
