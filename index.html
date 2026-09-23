@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23e';
+const APP_BUILD_VERSION = '2026-09-23f';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-23e';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23f',
+    date: '23 Sep 2026',
+    bullets: [
+      "Fixed Insights showing \u201cGroq rejected the API key\u201d when the key itself was fine but just didn\u2019t have access to the web-search (compound) models \u2014 it now quietly carries on without web research instead of failing the whole check, with a clear banner saying so."
+    ]
+  },
   {
     version: '2026-09-23e',
     date: '23 Sep 2026',
@@ -5337,8 +5344,14 @@ OUTPUT research notes, at most ~900 words. One short block per finding: name; ju
     webResearch = !!research && (Array.isArray(msg.executed_tools) ? msg.executed_tools.length>0 : researchUrls.length>0);
     models.push(r.model);
   }catch(e){
-    if(e.status===401 || e.status===403) throw e;
-    console.warn('Opportunity research step failed, continuing without web research:', e.message);
+    // A 401/403 here means THIS key can't use the compound/web-search
+    // models specifically \u2014 common even on an otherwise-working Groq
+    // key, since compound access isn't automatic on every account. That's
+    // not the same as the key being bad, so it doesn't abort the whole
+    // check \u2014 just carries on without web research. Only a 401/403 from
+    // the structuring step below (which every working key can reach)
+    // means the key itself is the problem.
+    console.warn('Opportunity research step failed, continuing without web research:', e.status, e.message);
     research=''; researchUrls=[]; webResearch=false;
   }
 
