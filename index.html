@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23h';
+const APP_BUILD_VERSION = '2026-09-23i';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-23h';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23i',
+    date: '23 Sep 2026',
+    bullets: [
+      "Insights now uses roughly a third less of Groq's free daily token allowance per check \u2014 shorter research notes, a smaller results cap (6 main + 2 other + 2 low relevance, was 8+3+3), and a lower response limit on both AI calls. Should mean a lot more checks fit in a day before Groq's free-tier daily limit is hit."
+    ]
+  },
   {
     version: '2026-09-23h',
     date: '23 Sep 2026',
@@ -5251,7 +5258,7 @@ function buildOpportunityFarmContext(location){
     ctx.animal_health_last_12_months={
       treatments:meds.length, treatment_cost_gbp:round(meds.reduce((s,r)=>s+(r.cost||0),0)), of_which_given_by_vet_gbp:round(vetCost),
       treatments_by_reason:byReason,
-      top_products:Object.values(byProduct).sort((a,b)=>b.treatments-a.treatments).slice(0,8).map(p=>({...p, cost_gbp:round(p.cost_gbp)})),
+      top_products:Object.values(byProduct).sort((a,b)=>b.treatments-a.treatments).slice(0,5).map(p=>({...p, cost_gbp:round(p.cost_gbp)})),
       animals_treated_3_or_more_times:Object.values(perAnimal).filter(n=>n>=3).length,
       injuries_recorded:injuryRecords.filter(r=>inLastYear(r.created_at||r.recorded_at||r.date)).length,
       animals_with_open_injury:animals.filter(a=>a.status==='active' && worstOpenInjury(a)).length,
@@ -5370,7 +5377,7 @@ ${ctxJson}
 TASK: Use web search to find CURRENT opportunities (open now, or opening/likely within the next 12 months) relevant to THIS farm. Search broadly \u2014 not just grants: national schemes and payments for land management, environment, capital items, productivity, animal health and welfare; local/regional, county, National Park, protected-landscape, catchment and water-company schemes; energy and renewables; plus practical cost-saving or productivity angles suggested by the farm's own figures. Look for opportunities created by COMBINATIONS of farm facts. Prefer official sources (gov.uk, defra, rural payments agencies, gov.scot, ruralpayments.org, gov.wales, daera-ni.gov.uk, local councils, national parks, official funding bodies); commercial sites only for discovery.
 Never put personal identifiers in search queries.
 
-OUTPUT research notes, at most ~900 words. One short block per finding: name; jurisdiction; open/closed/opening date; who is eligible; key criteria; published payment rates or amounts (only as published); the exact source URL you read; date published/updated if shown. Say plainly when something could not be confirmed.`;
+OUTPUT research notes, at most ~500 words \u2014 be concise, this is notes for another AI step, not a report. One short block per finding: name; jurisdiction; open/closed/opening date; who is eligible; key criteria; published payment rates or amounts (only as published); the exact source URL you read; date published/updated if shown. Say plainly when something could not be confirmed.`;
     // groq/compound (and compound-mini) were retired by Groq on 21 Sep
     // 2026 \u2014 requests to them now 404/410 outright. browser_search is
     // Groq's replacement: a built-in tool on the same gpt-oss-120b/20b
@@ -5379,7 +5386,7 @@ OUTPUT research notes, at most ~900 words. One short block per finding: name; ju
     // makes sure it actually searches rather than answering from memory
     // and skipping the tool.
     const r=await groqChatWithFallbacks(['openai/gpt-oss-120b','openai/gpt-oss-20b'], model=>[
-      {model, messages:[{role:'user', content:researchPrompt}], temperature:0.3, max_completion_tokens:3000,
+      {model, messages:[{role:'user', content:researchPrompt}], temperature:0.3, max_completion_tokens:1500,
         tools:[{type:'browser_search'}], tool_choice:'required'},
     ], 150000);
     const msg=r.json && r.json.choices && r.json.choices[0] && r.json.choices[0].message || {};
@@ -5418,7 +5425,7 @@ RULES \u2014 follow strictly:
 - Jurisdiction: ${where}. Never apply one UK nation's scheme to another.
 - unknown_or_missing: only information that would materially change THIS opportunity; set farm_detail_category to where the farmer could record it in aBC (field, building, machinery, other) or "none".
 - actions: 1\u20134 short, concrete next steps.
-- Quality over quantity: at most 8 with section "main" (most relevant, valuable, actionable, current first), up to 3 less-obvious ones with section "other", and up to 3 low_relevance.
+- Quality over quantity, and BE CONCISE in every field (this saves your daily quota): at most 6 with section "main" (most relevant, valuable, actionable, current first), up to 2 less-obvious ones with section "other", and up to 2 low_relevance. Keep summary/potential_benefit to one sentence each, and why_relevant/known_farm_evidence/actions to short phrases, not sentences.
 - data_gaps: up to 5 pieces of farm information that would most improve future analysis (e.g. total land area, tenancy, soil types) \u2014 only if genuinely missing from the farm data.
 - headline: one friendly sentence summarising what you found.
 - Plain UK English a farmer would use. Short sentences.
@@ -5428,9 +5435,9 @@ ${ctxJson}
 
 ${webResearch?'RESEARCH NOTES:\n'+research+'\n\nALLOWED SOURCE URLS:\n'+researchUrls.join('\n'):'RESEARCH NOTES: none available.'}`;
   const r2=await groqChatWithFallbacks(['openai/gpt-oss-120b','openai/gpt-oss-20b'], model=>[
-    {model, messages:[{role:'user', content:structurePrompt}], temperature:0.2, max_completion_tokens:6000, reasoning_effort:'medium',
+    {model, messages:[{role:'user', content:structurePrompt}], temperature:0.2, max_completion_tokens:3500, reasoning_effort:'medium',
       response_format:{type:'json_schema', json_schema:{name:'farm_opportunities', strict:true, schema:OPP_SCHEMA}}},
-    {model, messages:[{role:'user', content:structurePrompt+'\n\nReturn ONLY a JSON object with keys headline, opportunities, data_gaps as described. No other text.'}], temperature:0.2, max_completion_tokens:6000,
+    {model, messages:[{role:'user', content:structurePrompt+'\n\nReturn ONLY a JSON object with keys headline, opportunities, data_gaps as described. No other text.'}], temperature:0.2, max_completion_tokens:3500,
       response_format:{type:'json_object'}},
   ], 120000);
   models.push(r2.model);
@@ -5480,9 +5487,9 @@ function validateOpportunities(raw, researchUrls, webResearch){
     };
   }).filter(Boolean);
   const byRank=(a,b)=>OPP_STATUS[a.status].rank-OPP_STATUS[b.status].rank;
-  const low=opps.filter(o=>o.status==='low_relevance').slice(0,3);
-  const main=opps.filter(o=>o.status!=='low_relevance' && o.section==='main').sort(byRank).slice(0,8);
-  const other=opps.filter(o=>o.status!=='low_relevance' && o.section==='other').sort(byRank).slice(0,3);
+  const low=opps.filter(o=>o.status==='low_relevance').slice(0,2);
+  const main=opps.filter(o=>o.status!=='low_relevance' && o.section==='main').sort(byRank).slice(0,6);
+  const other=opps.filter(o=>o.status!=='low_relevance' && o.section==='other').sort(byRank).slice(0,2);
   const gaps=(Array.isArray(raw && raw.data_gaps)?raw.data_gaps:[]).map(g=>typeof g==='string'?{item:g, why:'', farm_detail_category:'other'}:g)
     .filter(g=>g && g.item).slice(0,5).map(g=>({item:String(g.item), why:String(g.why||''), farm_detail_category:cats.includes(g.farm_detail_category)?g.farm_detail_category:'none'}));
   return { headline:noOdds(String(raw && raw.headline || '')), opportunities:[...main, ...other, ...low], data_gaps:gaps };
