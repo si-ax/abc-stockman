@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23g';
+const APP_BUILD_VERSION = '2026-09-23h';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-23g';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23h',
+    date: '23 Sep 2026',
+    bullets: [
+      "Insights: switched web research over to Groq's browser_search tool on gpt-oss-120b/20b \u2014 the groq/compound model it was using was retired by Groq on 21 Sep 2026, which is why every run since then showed \u201cGroq couldn\u2019t search the web\u201d. This needs no special account access, just a working Groq key, so real web research should now actually run."
+    ]
+  },
   {
     version: '2026-09-23g',
     date: '23 Sep 2026',
@@ -5364,14 +5371,24 @@ TASK: Use web search to find CURRENT opportunities (open now, or opening/likely 
 Never put personal identifiers in search queries.
 
 OUTPUT research notes, at most ~900 words. One short block per finding: name; jurisdiction; open/closed/opening date; who is eligible; key criteria; published payment rates or amounts (only as published); the exact source URL you read; date published/updated if shown. Say plainly when something could not be confirmed.`;
-    const r=await groqChatWithFallbacks(['groq/compound','groq/compound-mini'], model=>[
-      {model, messages:[{role:'user', content:researchPrompt}], temperature:0.2, max_completion_tokens:2500},
+    // groq/compound (and compound-mini) were retired by Groq on 21 Sep
+    // 2026 \u2014 requests to them now 404/410 outright. browser_search is
+    // Groq's replacement: a built-in tool on the same gpt-oss-120b/20b
+    // models this feature already uses for structuring, so no separate
+    // model and no extra account access needed. tool_choice:'required'
+    // makes sure it actually searches rather than answering from memory
+    // and skipping the tool.
+    const r=await groqChatWithFallbacks(['openai/gpt-oss-120b','openai/gpt-oss-20b'], model=>[
+      {model, messages:[{role:'user', content:researchPrompt}], temperature:0.3, max_completion_tokens:3000,
+        tools:[{type:'browser_search'}], tool_choice:'required'},
     ], 150000);
     const msg=r.json && r.json.choices && r.json.choices[0] && r.json.choices[0].message || {};
     research=(msg.content||'').trim();
-    researchUrls=[...new Set([...extractUrls(JSON.stringify(msg.executed_tools||[])), ...extractUrls(JSON.stringify(r.json.citations||[])), ...extractUrls(research)])];
-    // Only count it as real web research if the search actually ran.
-    webResearch = !!research && (Array.isArray(msg.executed_tools) ? msg.executed_tools.length>0 : researchUrls.length>0);
+    researchUrls=[...new Set([...extractUrls(JSON.stringify(msg.executed_tools||[])), ...extractUrls(research)])];
+    // executed_tools is Groq's own record of whether the tool actually ran
+    // (the model can ignore tool_choice on rare occasions) \u2014 that, not
+    // just having a research paragraph, is what \u201creal web research\u201d means.
+    webResearch = !!research && Array.isArray(msg.executed_tools) && msg.executed_tools.length>0;
     models.push(r.model);
   }catch(e){
     // A 401/403 here means THIS key can't use the compound/web-search
