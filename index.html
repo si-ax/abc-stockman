@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23k';
+const APP_BUILD_VERSION = '2026-09-23m';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,25 @@ const APP_BUILD_VERSION = '2026-09-23k';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23m',
+    date: '23 Sep 2026',
+    bullets: [
+      "New way to sign in: a Farm ID and a personal passcode, right on the first screen \u2014 no email link to send or tap. Enter the Farm ID, pick yourself from the list if there's more than one of you, enter your passcode, and you're straight in. Email sign-in is still there as an alternative underneath.",
+      "Each farmer's passcode is checked on the server and never stored or seen by the app itself. There's no in-app screen to set your own yet \u2014 for now, ask Si to set or change one for you."
+    ]
+  },
+  {
+    version: '2026-09-23l',
+    date: '23 Sep 2026',
+    bullets: [
+      "Full sweep of every Add/Edit screen for the same problem as Add Medicine. Found the opposite mistake too, on Add Animal and an animal's own Details \u2014 Mother is shown as \u201c(optional)\u201d but was secretly required; it's now genuinely optional, matching what the screen already told you.",
+      "Add Farm Damage/Improvement: Location is now required (it wasn't, despite not being marked optional), and GPS is now explicitly labelled (optional) since it depends on signal.",
+      "Photo is now labelled (optional) consistently on every screen that has one \u2014 Add Medicine, Add/Edit Animal, Add Farm Damage, Add Injury, Medicine Cabinet \u2014 it always was, just not always said so.",
+      "Settings > Breeds: Min/Max Prime age are now labelled (optional) \u2014 they already default sensibly (18\u201330 months) or can be filled in by AI, so nothing about how they work has changed.",
+      "Farm details: the Details box is now labelled (optional) \u2014 building up detail over time was always fine, the label just didn't say so."
+    ]
+  },
   {
     version: '2026-09-23k',
     date: '23 Sep 2026',
@@ -941,6 +960,14 @@ let authFarmId = null;     // which farm that user belongs to (from farm_members
 let authEmail = '';        // in-progress value of the login screen's email field
 let magicLinkSent = false; // true once we've asked Supabase to send the email
 let authError = null;      // last auth-related error message, if any
+// Farm ID + passcode login (the supaLogin screen's alternative to emailing
+// a magic link) — pcMode toggles which form is showing; the rest only
+// matters while pcMode is true.
+let pcMode=false, pcFarmCode='', pcFarmName='', pcFarmerOptions=null, pcFarmerId='', pcPasscode='', pcLoading=false, pcError=null;
+// (No separate "logging in" flag: the guard below uses pcMode itself,
+// since a flag reset immediately after a failed attempt can lose a race
+// against signInAnonymously's own deferred auth-state callback — see the
+// PRE_APP_VIEWS guard.)
 
 // Looks up which farm (if any) the signed-in user belongs to, and — if
 // they belong to one — pulls that farm's animals down from Supabase into
@@ -4078,18 +4105,45 @@ function updateSignalBadge(){
 }
 
 const DEMO_FARM_CODE='DEV0001', DEMO_PASSCODE='00000000'; // no real Farm ID/Passcode data model exists yet — these are just pre-filled demo values, not validated against anything real
+function renderPasscodeLoginForm(){
+  const showOptions = pcFarmerOptions && pcFarmerOptions.length>0;
+  const showNoOptions = pcFarmerOptions && pcFarmerOptions.length===0;
+  const canSubmit = (pcFarmerOptions && pcFarmerOptions.length>0 && (pcFarmerOptions.length===1 || pcFarmerId)) && pcPasscode.trim();
+  return `
+    <label>Farm ID</label>
+    <input type="text" id="pcFarmCode" value="${escapeHtml(pcFarmCode)}" placeholder="e.g. WATERSWALLOWS1234" maxlength="24" autocapitalize="characters" autocorrect="off" spellcheck="false" style="text-transform:uppercase;font-size:16px;">
+    ${showNoOptions?`<div class="field-error" style="margin-top:8px;">No passcode sign-in is set up for that Farm ID yet.</div>`:''}
+    ${showOptions?`
+      ${pcFarmerOptions.length>1?`
+        <label style="margin-top:12px;">Who are you?</label>
+        <select id="pcFarmerPick">
+          <option value="" ${!pcFarmerId?'selected':''}>\u2014 Select \u2014</option>
+          ${pcFarmerOptions.map(f=>`<option value="${f.farmer_id}" ${pcFarmerId===f.farmer_id?'selected':''}>${escapeHtml(f.farmer_name)}</option>`).join('')}
+        </select>
+      `:`<div style="font-size:13px;color:var(--grey);margin-top:10px;">Signing in as <b style="color:var(--ink);">${escapeHtml(pcFarmerOptions[0].farmer_name)}</b> on <b style="color:var(--ink);">${escapeHtml(pcFarmName)}</b>.</div>`}
+      <label style="margin-top:12px;">Passcode</label>
+      <input type="text" inputmode="numeric" id="pcPasscode" value="${escapeHtml(pcPasscode)}" maxlength="8" style="font-size:16px;">
+    `:''}
+    ${pcError?`<div class="field-error" style="margin-top:8px;">${escapeHtml(pcError)}</div>`:''}
+    <div style="padding-top:16px;">
+      <button id="pcLoginBtn" class="fullbtn" ${(!canSubmit || pcLoading)?'disabled':''} style="${(!canSubmit || pcLoading)?'opacity:.5;':''}">${pcLoading?'Signing in\u2026':'Log in'}</button>
+      <button id="pcUseEmailInstead" class="fullbtn" style="background:none;border:1px solid var(--line);color:var(--ink);margin-top:10px;">Use email instead</button>
+    </div>`;
+}
 function renderSupaLogin(){
   return `
     <div style="display:flex;flex-direction:column;min-height:100%;">
       <div style="border:1px solid var(--line);border-radius:14px;margin:14px;overflow:hidden;background:#fff;display:flex;flex-direction:column;flex:1;">
         <div style="padding:32px 22px 4px;text-align:center;">
           <div style="font-size:20px;font-weight:800;margin-bottom:10px;">aBC Stockman</div>
-          <div style="font-size:14px;color:var(--grey);">${magicLinkSent
+          <div style="font-size:14px;color:var(--grey);">${pcMode
+            ? 'Enter your Farm ID and passcode to sign in.'
+            : magicLinkSent
             ? 'Check your email \u2014 tap the link we sent to sign in. You can close this and come back once you\u2019ve tapped it.'
             : 'Enter your email and we\u2019ll send you a link to sign in \u2014 no password needed.'}</div>
         </div>
         <div style="padding:22px;">
-          ${magicLinkSent ? `
+          ${pcMode ? renderPasscodeLoginForm() : magicLinkSent ? `
             <div style="font-size:13px;color:var(--grey);text-align:center;margin-bottom:14px;">Sent to <b style="color:var(--ink);">${escapeHtml(authEmail)}</b></div>
             <button id="supaLoginResend" class="fullbtn" style="background:none;border:1px solid var(--line);color:var(--ink);">Use a different email</button>
           ` : `
@@ -4099,7 +4153,12 @@ function renderSupaLogin(){
           `}
         </div>
         <div style="flex:1;"></div>
-        ${!magicLinkSent?`<div style="padding:16px 22px 22px;"><button id="supaLoginSend" class="fullbtn">Send login link</button></div>`:''}
+        ${(!pcMode && !magicLinkSent)?`
+          <div style="padding:0 22px 8px;text-align:center;">
+            <button id="supaLoginUsePasscode" style="background:none;border:none;color:var(--primary);font-weight:700;font-size:14px;text-decoration:underline;padding:6px;">Use a Farm ID and passcode instead</button>
+          </div>
+          <div style="padding:0 22px 22px;"><button id="supaLoginSend" class="fullbtn">Send login link</button></div>
+        `:''}
       </div>
     </div>`;
 }
@@ -6043,9 +6102,10 @@ function renderDamageAdd(){
       </div></div>
       <div id="damageImprovementLabel" style="text-align:center;font-size:13px;font-weight:700;color:var(--primary-dark);margin:4px 0 10px;display:${damageTypePick==='improvement'?'block':'none'};">Record improvements as evidence for grants</div>
 
+      <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('damagephoto', damagePhotoTemp, 'Click to take photo of damage')}
 
-      <label>GPS</label>
+      <label>GPS <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       <div style="display:flex;gap:8px;">
         <input type="text" id="damageGps" placeholder="Not captured" readonly style="flex:1;background:#f3f3f3;color:var(--grey);">
         <button id="damageGpsBtn" style="background:none;border:none;cursor:pointer;color:var(--ink);width:34px;height:34px;flex-shrink:0;">${icon('pin')}</button>
@@ -6055,6 +6115,7 @@ function renderDamageAdd(){
       <label>Location</label>
       <input type="text" id="damageLocation" list="damageLocationList" placeholder="e.g. North field" maxlength="150">
       <datalist id="damageLocationList">${[...new Set(damageRecords.map(d=>d.location).filter(Boolean))].sort().map(l=>`<option value="${escapeHtml(l)}">`).join('')}</datalist>
+      <div class="field-error" id="err-location" style="padding:0 2px;"></div>
 
       <label>Summary</label>
       <input type="text" id="damageSummary" placeholder="e.g. Fence down" maxlength="250">
@@ -6835,6 +6896,7 @@ function renderAnimalDetails(){
           </label>`;
       })()}
 
+      <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('photo', photoVal, 'Click to take photo of animal')}
 
       ${farmSettings.use_animal_names===false?'':`
@@ -6909,6 +6971,7 @@ function renderAdd(){
         `}
       </div>
 
+      <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('photo', newAnimalPhoto, 'Click to take photo of animal')}
 
       <div class="formrow"><label>Mgmt ID</label><div class="formctrl"><input type="text" id="f-tag" placeholder="e.g. A-1101"></div></div>
@@ -7530,6 +7593,7 @@ function renderMedicineAdd(){
       <div class="formrow" id="med-expiry-farmer-row" style="display:none;"><label>Expiry date</label><div class="formctrl"><input type="text" id="med-expirydate-farmer-display" readonly value="\u2014" style="background:#f3f3f3;color:var(--grey);"></div></div>
 
       <div id="med-photo-row" style="display:none;">
+        <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
         ${photoCaptureBlockModal('medphoto', medAddPhoto, 'Click to take photo of medicine')}
       </div>
 
@@ -7577,6 +7641,7 @@ function renderMedCabinetAdd(){
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>${title}</span><span></span></div>
     <div class="body">
+      <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('medcabphoto', medCabAddPhoto, 'Click to take photo of medicine')}
 
       <div class="formrow" style="margin-top:10px;"><label>Product name</label><div class="formctrl"><input type="text" id="medcab-name" list="medcabProductList" placeholder="e.g. Oxytetracycline" maxlength="100" value="${escapeHtml(m.name||'')}" ${ro} style="${roStyle}"></div></div>
@@ -7802,6 +7867,7 @@ function renderInjuryAdd(){
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>${headerIdName(a,26)}</span><span></span></div>
     <div class="body">
+      <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('injphoto', injAddPhoto, 'Click to take photo of injury')}
 
       <div class="formrow" style="margin-top:12px;"><label style="color:var(--red);">Body part</label><div class="formctrl"><select id="inj-bodypart">
@@ -8040,9 +8106,9 @@ function renderSettings(){
     <div style="margin-top:10px;">
       <label>New breed name</label>
       <input type="text" id="newBreedName" placeholder="e.g. Dexter">
-      <label>Min Prime age (months)</label>
+      <label>Min Prime age (months) <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional \u2014 defaults to 18\u201330, or AI-suggested if turned on)</span></label>
       <input type="number" id="newBreedMinPrime" placeholder="e.g. 18">
-      <label>Max Prime age (months)</label>
+      <label>Max Prime age (months) <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       <input type="number" id="newBreedMaxPrime" placeholder="e.g. 30">
     </div>`;
 
@@ -8196,7 +8262,7 @@ function renderSettings(){
           <label>Name</label>
           <input type="text" id="fdName" maxlength="80" placeholder="${escapeHtml(def.namePlaceholder)}" value="${escapeHtml(e.name||'')}">
           <div class="field-error" id="err-fdname"></div>
-          <label>Details</label>
+          <label>Details <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional \u2014 add what you know now, build it up over time)</span></label>
           <textarea id="fdDetails" maxlength="${FARM_DETAIL_MAX_CHARS}" style="min-height:150px;" placeholder="${escapeHtml(def.detailsPlaceholder)}">${escapeHtml(e.details||'')}</textarea>
           <div id="fdCharCount" style="font-size:12px;color:${remaining<100?'var(--amber)':'var(--grey)'};text-align:right;margin-top:2px;">${remaining} characters remaining</div>
           <div id="fdChecklist" style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px;">
@@ -10705,9 +10771,6 @@ function wireView(){
       }
       const sexChecked=document.querySelector('input[name="f-sex"]:checked');
       if(!sexChecked){ highlightFirstMissingField([['sexM','Sex']]); return; }
-      const motherIdForCheck = editAnimalMotherId!==undefined ? editAnimalMotherId : a.mother_id;
-      const motherExternalForCheck = editAnimalMotherExternalEid!==undefined ? editAnimalMotherExternalEid : a.mother_external_eid;
-      if(!motherIdForCheck && !motherExternalForCheck){ highlightFirstMissingField([['pickMother','Mother']]); return; }
       const birthRaw=document.getElementById('f-birth').value;
       if(!birthRaw){ highlightFirstMissingField([['f-birth','D.O.B']]); return; }
       const todayIso=todayStr();
@@ -10985,6 +11048,79 @@ function wireView(){
     };
     const resendBtn=document.getElementById('supaLoginResend');
     if(resendBtn) resendBtn.onclick=()=>{ magicLinkSent=false; authError=null; render(); };
+    const usePasscodeBtn=document.getElementById('supaLoginUsePasscode');
+    if(usePasscodeBtn) usePasscodeBtn.onclick=()=>{ pcMode=true; pcError=null; render(); const t=document.getElementById('pcFarmCode'); if(t) t.focus(); };
+    const useEmailBtn=document.getElementById('pcUseEmailInstead');
+    if(useEmailBtn) useEmailBtn.onclick=()=>{ pcMode=false; pcError=null; render(); };
+    const pcCodeInput=document.getElementById('pcFarmCode');
+    if(pcCodeInput){
+      pcCodeInput.oninput=()=>{ pcFarmCode=pcCodeInput.value; if(pcFarmerOptions!==null){ pcFarmerOptions=null; pcFarmerId=''; pcError=null; render(); const t=document.getElementById('pcFarmCode'); if(t){ t.focus(); t.setSelectionRange(t.value.length,t.value.length); } } };
+      // Looks up who can sign in the moment a Farm ID is entered (blur or
+      // Enter) — matches "on entering the farm id it gets the users for
+      // that farm" rather than needing a separate lookup button.
+      const lookup=async()=>{
+        const code=pcCodeInput.value.trim();
+        if(!code || pcLoading) return;
+        pcLoading=true; pcError=null; render();
+        const t=document.getElementById('pcFarmCode'); if(t) t.value=code; // keep what they typed through the re-render
+        const { data, error } = await sb.rpc('list_farm_login_options', { p_code: code });
+        pcLoading=false;
+        if(error){ pcError='Couldn\u2019t check that Farm ID \u2014 check you have a signal and try again.'; render(); return; }
+        pcFarmerOptions = data||[];
+        pcFarmName = pcFarmerOptions.length ? pcFarmerOptions[0].farm_name : '';
+        pcFarmerId = pcFarmerOptions.length===1 ? pcFarmerOptions[0].farmer_id : '';
+        render();
+        if(pcFarmerOptions.length){ const p=document.getElementById('pcPasscode'); if(p) p.focus(); }
+      };
+      pcCodeInput.onblur=lookup;
+      pcCodeInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter'||e.keyCode===13){ e.preventDefault(); pcCodeInput.blur(); lookup(); } });
+    }
+    const pcFarmerPick=document.getElementById('pcFarmerPick');
+    if(pcFarmerPick) pcFarmerPick.onchange=()=>{ pcFarmerId=pcFarmerPick.value; pcError=null; render(); };
+    const pcPasscodeInput=document.getElementById('pcPasscode');
+    // Deliberately not a full render() on every keystroke (would drop
+    // keyboard focus) — but the Log In button's enabled state still needs
+    // to track pcPasscode live, so it's patched directly instead.
+    if(pcPasscodeInput) pcPasscodeInput.oninput=()=>{
+      pcPasscode=pcPasscodeInput.value;
+      const btn=document.getElementById('pcLoginBtn');
+      if(btn){
+        const canSubmit = !!(pcFarmerOptions && pcFarmerOptions.length>0 && (pcFarmerOptions.length===1 || pcFarmerId) && pcPasscode.trim());
+        btn.disabled=!canSubmit;
+        btn.style.opacity = canSubmit ? '' : '.5';
+      }
+    };
+    const pcLoginBtn=document.getElementById('pcLoginBtn');
+    if(pcLoginBtn) pcLoginBtn.onclick=async()=>{
+      if(!pcFarmerOptions || !pcFarmerOptions.length) return;
+      const farmerId = pcFarmerOptions.length===1 ? pcFarmerOptions[0].farmer_id : pcFarmerId;
+      const farmer = pcFarmerOptions.find(f=>f.farmer_id===farmerId);
+      if(!farmer){ pcError='Select who you are.'; render(); return; }
+      if(!pcPasscode.trim()){ pcError='Enter your passcode.'; render(); return; }
+      pcLoading=true; pcError=null; render();
+      try{
+        if(!authUser){
+          const { error: anonErr } = await sb.auth.signInAnonymously();
+          if(anonErr){
+            pcError = /disabled|not enabled/i.test(anonErr.message) ? 'Passcode sign-in isn\u2019t switched on for this app yet \u2014 ask Si to enable Anonymous sign-ins in Supabase.' : anonErr.message;
+            pcLoading=false; render(); return;
+          }
+        }
+        const { error: rpcErr } = await sb.rpc('redeem_farm_passcode', { p_code: pcFarmCode.trim(), p_farmer_id: farmerId, p_passcode: pcPasscode.trim() });
+        if(rpcErr){ pcError='Incorrect Farm ID, user or passcode.'; pcLoading=false; render(); return; }
+        await resolveFarmMembership();
+        if(!authFarmId){ pcError='Signed in, but couldn\u2019t find that farm \u2014 try again.'; pcLoading=false; render(); return; }
+        deviceFarmCode=pcFarmCode.trim().toUpperCase(); deviceFarmName=pcFarmName;
+        currentFarmerId=farmer.farmer_id; currentFarmerName=farmer.farmer_name;
+        await persistAll();
+        pcMode=false; pcLoading=false; pcFarmCode=''; pcFarmName=''; pcFarmerOptions=null; pcFarmerId=''; pcPasscode=''; pcError=null;
+        logMsg('Signed in as <b>'+escapeHtml(currentFarmerName)+'</b> via Farm ID and passcode.');
+        goHomeRespectingBootMinimum();
+      }catch(e){
+        pcError='Something went wrong \u2014 check you have a signal and try again.';
+        pcLoading=false; render();
+      }
+    };
   }
   if(view==='supaWaiting'){
     document.getElementById('supaWaitingRefresh').onclick=async()=>{
@@ -11536,8 +11672,7 @@ Rules:
       if(!breedId) missing.push('Breed');
       if(!sexChecked) missing.push('Sex');
       if(!birthRaw) missing.push('D.O.B');
-      if(!newAnimalMotherId && !newAnimalMotherExternalEid) missing.push('Mother');
-      if(missing.length){ highlightFirstMissingField([['f-tag','Mgmt ID'],['f-breed','Breed'],['sexM','Sex'],['f-birth','D.O.B'],['pickMother','Mother']]); return; }
+      if(missing.length){ highlightFirstMissingField([['f-tag','Mgmt ID'],['f-breed','Breed'],['sexM','Sex'],['f-birth','D.O.B']]); return; }
       if(animals.some(x=>x.tag_number.toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return; }
       const name=document.getElementById('f-name').value.trim();
       const sex=sexChecked.value;
@@ -12486,11 +12621,15 @@ Rules:
       const summary=document.getElementById('damageSummary').value.trim();
       const errS=document.getElementById('err-summary'); errS.textContent='';
       const errU=document.getElementById('err-urgency'); errU.textContent='';
+      const location=document.getElementById('damageLocation').value.trim();
+      const errLoc=document.getElementById('err-location'); if(errLoc) errLoc.textContent='';
       const missing=[];
+      if(!location) missing.push('Location');
       if(!summary) missing.push('Summary');
       if(!damageUrgencyPick) missing.push('Urgency');
       if(missing.length){
-        if(!summary){ highlightFirstMissingField([['damageSummary','Summary']]); }
+        if(!location){ highlightFirstMissingField([['damageLocation','Location']]); }
+        else if(!summary){ highlightFirstMissingField([['damageSummary','Summary']]); }
         else if(!damageUrgencyPick){
           const chipsEl=document.querySelector('.urgencychip');
           if(chipsEl && chipsEl.parentElement) chipsEl.parentElement.scrollIntoView({block:'center', behavior:'smooth'});
@@ -12498,7 +12637,6 @@ Rules:
         }
         return;
       }
-      const location=document.getElementById('damageLocation').value.trim();
       const details=document.getElementById('damageDetails').value.trim();
       const sfiCodeEl=document.getElementById('damageSfiCode');
       const sfiCode = (damageTypePick==='improvement' && sfiCodeEl) ? sfiCodeEl.value.trim().toUpperCase() : '';
@@ -13451,7 +13589,12 @@ Rules:
     authUser = newSession ? newSession.user : null;
     if(authUser){
       await resolveFarmMembership();
-      if(PRE_APP_VIEWS.has(view)){
+      // pcMode covers the whole passcode attempt, not just the moment
+      // around signInAnonymously — its callback can still be pending when
+      // a failed passcode leaves the user back on the form to retry, and
+      // firing late must never bounce them off it (a timing flag reset
+      // right after that failure raced this and lost; this doesn't).
+      if(PRE_APP_VIEWS.has(view) && !pcMode){
         if(authFarmId && deviceFarmCode) goHomeRespectingBootMinimum();
         else { view = authFarmId ? 'login' : 'supaWaiting'; render(); }
       }
