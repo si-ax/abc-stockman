@@ -293,7 +293,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-21q';
+const APP_BUILD_VERSION = '2026-09-23a';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -301,6 +301,30 @@ const APP_BUILD_VERSION = '2026-09-21q';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23a',
+    date: '23 Sep 2026',
+    bullets: [
+      "New Farm details section in Settings (below Farmers & vets) \u2014 record your Fields, Buildings, Machinery and anything else about the farm, up to 1000 characters per entry. Each entry gets a red/amber/green rating showing how complete it is and exactly what\u2019s missing (e.g. soil type, drainage, condition), with a checklist that ticks off as you type.",
+      "Farm details are shared with everyone on the farm, show who last changed each entry and when, and can be deleted (you\u2019ll be asked to confirm first). With AI turned on, Ask in Reports can now use them too \u2014 e.g. \u201cwhich of my fields might suit SFI actions?\u201d"
+    ]
+  },
+  {
+    version: '2026-09-22a',
+    date: '22 Sep 2026',
+    bullets: [
+      "Animal details now has a Notes field at the bottom for general notes about that animal (up to 5000 characters).",
+      "Animal List filter is much more capable: Status and Breed are joined by BCS, Health (green/amber/red), Off farm, and the same three checks as Attention \u2014 Unweighed 60+ days, TB test overdue, Open injury. Status is now a dropdown rather than chips."
+    ]
+  },
+  {
+    version: '2026-09-21r',
+    date: '22 Sep 2026',
+    bullets: [
+      "Animal List and the Move screen's Add animal picker both now have a Select all button, which only selects whatever's currently visible (respecting any search/filter in place).",
+      "Removed the local \u201cTest data\u201d toggle from Settings \u2014 it was flashing 100 fake demo animals on every fresh install before your real farm data loaded a moment later, and in some cases could even inject fake TB-test records into real animals. Test data now lives entirely in a separate DEV0000 farm in Supabase, switchable via Settings \u2192 System Admin, so it can never touch a real farm's data."
+    ]
+  },
   {
     version: '2026-09-21q',
     date: '21 Sep 2026',
@@ -926,6 +950,12 @@ async function loadFarmData(farmId){
   const { data: remoteFarmersVets, error: fvErr } = await sb.from('farmers_vets').select('*').eq('farm_id', farmId);
   if(fvErr){ authError = fvErr.message; return; }
   farmersVets = remoteFarmersVets || [];
+  // Farm details — deliberately NOT fatal on error (unlike the tables above):
+  // this is an optional, newer table, so if it's ever unavailable the rest
+  // of the farm should still load, keeping whatever's cached on the device.
+  const { data: remoteFarmDetails, error: fdErr } = await sb.from('farm_details').select('*').eq('farm_id', farmId);
+  if(!fdErr) farmDetails = remoteFarmDetails || [];
+  else console.warn('farm_details load failed:', fdErr.message);
 
   // Farm-wide settings — one shared row per farm. Created from whatever's
   // currently in the local default if this farm doesn't have one yet
@@ -1195,6 +1225,7 @@ const SYNC_TABLE_TO_LOCAL_ARRAY={
   medicine_records:()=>medicineRecords, feed_records:()=>feedRecords, feed_usage_records:()=>feedUsageRecords,
   breeds:()=>breeds, breed_price_history:()=>breedPriceHistory, feed_types:()=>feedTypes,
   medicine_types:()=>medicineTypes, farmers_vets:()=>farmersVets, breeding_records:()=>breedingRecords,
+  farm_details:()=>farmDetails,
 };
 async function discardStuckSyncEntry(key){
   const idx=key.indexOf(':');
@@ -1267,7 +1298,7 @@ async function syncAnimalToSupabase(a){
     bcms_birth_reported:a.bcms_birth_reported??null, bcms_birth_reported_at:a.bcms_birth_reported_at??null,
     bcms_death_reported:a.bcms_death_reported??null, bcms_death_reported_at:a.bcms_death_reported_at??null,
     offspring_status:a.offspring_status??null, offspring_due_date:a.offspring_due_date??null, offspring_until_date:a.offspring_until_date??null,
-    is_cross:!!a.is_cross,
+    is_cross:!!a.is_cross, notes:a.notes??null,
   }});
 }
 
@@ -1373,6 +1404,21 @@ async function syncFarmerVetToSupabase(p){
   await queuedSync('farmers_vets:'+p.id, {table:'farmers_vets', method:'upsert', label:'<b>'+escapeHtml(p.name)+'</b>', payload:
     { id:p.id, farm_id:authFarmId, name:p.name, role:p.role??null, active:!!p.active }
   });
+}
+// Farm details (Settings > Farm details). modified_by_user_id and the
+// created_* columns are also stamped/frozen server-side by a trigger, so
+// the recorded modifier is always whoever was actually signed in.
+async function syncFarmDetailToSupabase(d){
+  if(!authFarmId) return;
+  await queuedSync('farm_details:'+d.id, {table:'farm_details', method:'upsert', label:'farm detail <b>'+escapeHtml(d.name)+'</b>', payload:{
+    id:d.id, farm_id:authFarmId, category:d.category, name:d.name, details:d.details||'',
+    created_at:d.created_at, created_by_name:d.created_by_name??null,
+    modified_at:d.modified_at, modified_by_name:d.modified_by_name??null, modified_by_email:d.modified_by_email??null,
+  }});
+}
+async function deleteFarmDetailFromSupabase(id){
+  if(!authFarmId) return;
+  await queuedSync('farm_details:'+id, {table:'farm_details', method:'delete', matchId:id, label:'removing a farm detail'});
 }
 // Farm-wide — every member sees and can change these.
 async function syncFarmSettingsToSupabase(){
@@ -2161,7 +2207,7 @@ function footerBar(items){
   }).join('') + '</div>';
 }
 
-let breeds=[], animals=[], events={}, weights=[], feedTypes=[], feedRecords=[], feedUsageRecords=[], medicineTypes=[], medicineRecords=[], injuryRecords=[], damageRecords=[], moveRecords=[], farmersVets=[], breedingRecords=[], breedPriceHistory=[];
+let breeds=[], animals=[], events={}, weights=[], feedTypes=[], feedRecords=[], feedUsageRecords=[], medicineTypes=[], medicineRecords=[], injuryRecords=[], damageRecords=[], moveRecords=[], farmersVets=[], breedingRecords=[], breedPriceHistory=[], farmDetails=[];
 let breedingStatusPick;
 let breedingEasePick, breedingMotherPick; // undefined = not touched this visit; else holds the in-progress picked value, surviving re-renders (e.g. from changing the status radio) until Save
 let breedingOffspringExpanded=false;
@@ -2179,6 +2225,10 @@ let expandedBcmsGroupKey=null;
 // data. Not persisted between visits; a fresh question each time in.
 let askQuestionText='', askAnswer=null, askLoading=false, askError=null;
 let settingsOpenSection=null, settingsShowAddForm=false;
+// Settings > Farm details: which sub-expander (field/building/machinery/other)
+// is open, and the add/edit draft if the form's showing. The draft holds the
+// typed text so a background re-render (periodic sync) can't wipe it.
+let farmDetailsOpenCat=null, farmDetailEdit=null; // farmDetailEdit: {id|null, category, name, details}
 let importFile=null, importBusy=false, importError='';
 let backupRestoreFile=null, backupRestoreBusy=false, backupRestoreError='', backupRestoreOpen=false;
 let usingFeed=true, usingFeedLog=[];
@@ -2292,8 +2342,15 @@ function ensureDemoTbTests(){
 }
 
 function genSeed(){
-  farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:'', use_ai:false, groq_api_key:null, test_data_mode:'loaded'};
-  loadDemoTestData();
+  // Used to seed the built-in demo dataset here on first local launch —
+  // removed. Real farms are Supabase-backed now: resolveFarmMembership()/
+  // loadFarmData() populate everything from the farm's actual data within
+  // moments of the app opening, so seeding 100 fake animals into local
+  // storage first just meant a confusing flash of them before the real
+  // (often much smaller, e.g. Phil's actual few animals) data overwrote
+  // it a moment later. Leaving everything empty here is the correct
+  // starting state either way now.
+  farmSettings={typical_gestation_days:283, use_animal_names:true, manage_fodder_spend:true, farm_location:null, cph:'', use_ai:false, groq_api_key:null};
 }
 // Populates the app with the built-in demo dataset: breeds, fodder types,
 // medicine types (plus the permanent TB test entry), farmers & vets, and
@@ -2439,17 +2496,23 @@ async function loadAll(){
   currentFarmerId = cfi||null; currentFarmerName = cfn||null;
   const sq=await safeGet('local:syncqueue');
   syncQueue = sq?JSON.parse(sq):{};
-  if(!b||!a){ genSeed(); await persistAll(); logMsg('Seeded 100 animals into local storage on first launch.'); }
+  if(!b||!a){ genSeed(); await persistAll(); logMsg('First launch on this device \u2014 waiting for the farm\u2019s real data to load.'); }
   else{
     breeds=JSON.parse(b); animals=JSON.parse(a); events=JSON.parse(e); weights= w?JSON.parse(w):[];
     feedTypes= ft?JSON.parse(ft):[]; feedRecords= fr?JSON.parse(fr):[]; feedUsageRecords= fur?JSON.parse(fur):[];
     medicineTypes= mt?JSON.parse(mt):[]; medicineRecords= mr?JSON.parse(mr):[]; injuryRecords= ir?JSON.parse(ir):[];
     ensureTbTestMedicineType();
-    farmSettings= fs?JSON.parse(fs):{typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:'', test_data_mode:'loaded'};
+    farmSettings= fs?JSON.parse(fs):{typical_gestation_days:283, use_animal_names:true, farm_location:null, cph:'', test_data_mode:'cleared'};
     if(farmSettings.typical_gestation_days==null) farmSettings.typical_gestation_days=283;
     if(farmSettings.manage_fodder_spend==null) farmSettings.manage_fodder_spend=true;
     if(farmSettings.cph==null) farmSettings.cph='';
-    if(farmSettings.test_data_mode==null) farmSettings.test_data_mode='loaded';
+    // Was defaulting to 'loaded' here whenever this field was simply
+    // missing — which, combined with ensureDemoTbTests() below running
+    // unconditionally on every load, meant a real farm could silently get
+    // fake TB-test records injected into its real animals. 'cleared' is
+    // the only safe default now that demo data isn't part of the live
+    // app flow any more.
+    if(farmSettings.test_data_mode==null) farmSettings.test_data_mode='cleared';
     userSettings= us?JSON.parse(us):{mute_weighing_notification:false};
     if(farmSettings.use_ai==null) farmSettings.use_ai=false;
     if(farmSettings.groq_api_key===undefined) farmSettings.groq_api_key=null;
@@ -2464,6 +2527,8 @@ async function loadAll(){
     breedingRecords= br?JSON.parse(br):[];
     const bph=await safeGet('local:breedpricehistory');
     breedPriceHistory= bph?JSON.parse(bph):[];
+    const fdl=await safeGet('local:farmdetails');
+    farmDetails= fdl?JSON.parse(fdl):[];
   }
 }
 // ---------- farm data import (Settings > Import farm data) ----------
@@ -2803,6 +2868,7 @@ async function persistAll(){
   await safeSet('local:feedlocationlog', JSON.stringify(feedLocationLog));
   await safeSet('local:breedingrecords', JSON.stringify(breedingRecords));
   await safeSet('local:breedpricehistory', JSON.stringify(breedPriceHistory));
+  await safeSet('local:farmdetails', JSON.stringify(farmDetails));
   await safeSet('local:devicefarmcode', deviceFarmCode||'');
   await safeSet('local:devicefarmname', deviceFarmName||'');
   await safeSet('local:currentfarmerid', currentFarmerId||'');
@@ -2829,7 +2895,7 @@ function backupSnapshot(){
       medicineTypes, medicineRecords,
       injuryRecords, farmSettings, damageRecords, moveRecords, farmersVets,
       usingFeed, usingFeedLog, feedLocation, feedLocationLog,
-      breedingRecords, breedPriceHistory,
+      breedingRecords, breedPriceHistory, farmDetails,
       deviceFarmCode, deviceFarmName, currentFarmerId, currentFarmerName,
     },
   };
@@ -2857,7 +2923,7 @@ async function restoreFullBackup(parsed){
   injuryRecords=d.injuryRecords||[]; farmSettings=d.farmSettings||{}; damageRecords=d.damageRecords||[]; moveRecords=d.moveRecords||[]; farmersVets=d.farmersVets||[];
   usingFeed=d.usingFeed!==undefined?d.usingFeed:true; usingFeedLog=d.usingFeedLog||[];
   feedLocation=d.feedLocation||'barn'; feedLocationLog=d.feedLocationLog||[];
-  breedingRecords=d.breedingRecords||[]; breedPriceHistory=d.breedPriceHistory||[];
+  breedingRecords=d.breedingRecords||[]; breedPriceHistory=d.breedPriceHistory||[]; farmDetails=d.farmDetails||[];
   deviceFarmCode=d.deviceFarmCode||null; deviceFarmName=d.deviceFarmName||null;
   currentFarmerId=d.currentFarmerId||null; currentFarmerName=d.currentFarmerName||null;
   ensureTbTestMedicineType();
@@ -3033,6 +3099,7 @@ let newAnimalIsCross=false; // the small "X" toggle next to Breed — solid when
 let newAnimalEidManuallyEntered=false; // true once "Enter EID" has been used to type a value by hand — hides the Scan passport/tag option on Add Animal, which only makes sense before an EID exists one way or the other.
 let editAnimalMotherId, editAnimalMotherExternalEid, editAnimalFatherId, editAnimalFatherExternalEid, editAnimalEid, editAnimalPhoto, editAnimalIsCross;
 let selectedId=null, statusFilter='active', searchTerm='', modal=null, filterBreedId=null, herdShowAllHistory=false;
+let filterOffFarm=false, filterBcs=null, filterHealth=null, filterUnweighed60=false, filterTbOverdue=false, filterOpenInjury=false;
 let herdSelectMode=false, herdSelectedIds=[];
 
 // ================= NAVIGATION HISTORY (back arrow + swipe-right) =================
@@ -3046,6 +3113,7 @@ function snapshotState(){
     feedTarget, healthTarget, selectedInjSev, cameFromSummary,
     moveDate, moveGps, moveAnimalIds:[...moveAnimalIds], moveSessionRecordId, moveLocationVal, moveReasonVal, moveDirection, moveDestCphVal,
     expandedDamageId, showCalcBreakdown, statusFilter, searchTerm, filterBreedId, herdShowAllHistory,
+    filterOffFarm, filterBcs, filterHealth, filterUnweighed60, filterTbOverdue, filterOpenInjury,
     sortColumn, sortDir, weighRecordedExpanded,
   };
 }
@@ -3057,6 +3125,8 @@ function restoreState(s){
   moveLocationVal=s.moveLocationVal; moveReasonVal=s.moveReasonVal; moveDirection=s.moveDirection; moveDestCphVal=s.moveDestCphVal||'';
   expandedDamageId=s.expandedDamageId; showCalcBreakdown=s.showCalcBreakdown;
   statusFilter=s.statusFilter; searchTerm=s.searchTerm; filterBreedId=s.filterBreedId; herdShowAllHistory=!!s.herdShowAllHistory;
+  filterOffFarm=!!s.filterOffFarm; filterBcs=s.filterBcs!==undefined?s.filterBcs:null; filterHealth=s.filterHealth!==undefined?s.filterHealth:null;
+  filterUnweighed60=!!s.filterUnweighed60; filterTbOverdue=!!s.filterTbOverdue; filterOpenInjury=!!s.filterOpenInjury;
   sortColumn=s.sortColumn; sortDir=s.sortDir; weighRecordedExpanded=s.weighRecordedExpanded;
 }
 function hasUnsavedWeighChanges(){
@@ -4491,7 +4561,11 @@ function buildFarmDataContext(){
   }));
   return {
     today: todayStr(),
-    farm: { cph: farmSettings.cph||null },
+    farm: {
+      cph: farmSettings.cph||null,
+      // What the farmer's told us about the farm itself (Settings > Farm details)
+      details: farmDetails.map(d=>({ type:d.category, name:d.name, details:d.details||'' })),
+    },
     animal_count: animals.length,
     animals: animalsData,
     totals: { feed_cost_gbp_alltime: totalFeedCostGbp, medicine_cost_gbp_alltime: totalMedicineCostGbp },
@@ -5627,6 +5701,21 @@ function renderHerd(){
     if(a.status!==statusFilter) return false;
     if(term && !(a.tag_number.toLowerCase().includes(term) || (a.name||'').toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))) return false;
     if(filterBreedId && a.breed_id!==filterBreedId) return false;
+    if(filterOffFarm){
+      const lm=lastMoveForAnimal(a.id);
+      if(!(lm && lm.direction==='off')) return false;
+    }
+    if(filterBcs!=null){
+      const bcsRec=lastBcsRecord(a.id);
+      if(!bcsRec || bcsRec.bcs!==filterBcs) return false;
+    }
+    if(filterHealth && healthScore(a).color!==filterHealth) return false;
+    if(filterUnweighed60){
+      const lw=lastWeightRecord(a.id);
+      if(!(!lw || (new Date()-new Date(lw.recorded_at))/86400000 > 60)) return false;
+    }
+    if(filterTbOverdue && !tbTestOverdue(a.id)) return false;
+    if(filterOpenInjury && !injuryRecords.some(r=>r.animal_id===a.id && !r.resolved_at)) return false;
     return true;
   });
   // Non-active statuses (Died/Sold/Swapped/Stolen/Removed) accumulate over
@@ -5664,6 +5753,7 @@ function renderHerd(){
     <div class="body bigtext">
       <div class="stickyhead">
         <div class="searchrow"><div class="searchwrap"><input type="text" id="searchInput" autocomplete="off" placeholder="Search tag, name, breed" value="${searchTerm.replace(/"/g,'&quot;')}">${searchClearMarkup('searchInput')}</div></div>
+        ${list.length?`<button id="herdSelectAllBtn" class="fullbtn ghost" style="margin-top:6px;">Select all (${list.length})</button>`:''}
       </div>
       ${list.length? `
       <table class="listtable">
@@ -5692,7 +5782,7 @@ function renderHerd(){
       {id:'herd-home', icon:'home', label:'Home', home:true},
     ] : [
       {id:'herd-help', icon:'help', label:'Help'},
-      {id:'herd-filter', icon:'filter', label:(statusFilter!=='active'||filterBreedId)?'Filter \u25cf':'Filter', primary:true},
+      {id:'herd-filter', icon:'filter', label:(statusFilter!=='active'||filterBreedId||filterOffFarm||filterBcs!=null||filterHealth||filterUnweighed60||filterTbOverdue||filterOpenInjury)?'Filter \u25cf':'Filter', primary:true},
       {id:'herd-scan', icon:'camera', label:'Scan', primary:true},
       {id:'herd-home', icon:'home', label:'Home', home:true},
     ])}`;
@@ -6040,6 +6130,10 @@ function renderAnimalDetails(){
       <div class="formrow"><label>Weaned weight</label><div class="formctrl withunit"><input type="text" inputmode="decimal" id="f-weanedweight" value="${a.weaned_weight_kg!=null?a.weaned_weight_kg:''}" placeholder="Optional"><span>KG</span></div></div>
 
       <div class="formrow"><label style="color:var(--red);">Purchase</label><div class="formctrl withunit"><span>&pound;</span><input type="text" inputmode="decimal" id="f-purchaseprice" value="${a.purchase_price!=null?a.purchase_price:''}" placeholder="Optional"></div></div>
+
+      <label style="margin-top:14px;">Notes <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
+      <textarea id="f-notes" maxlength="5000" style="height:${a.notes?'90':'38'}px;${a.notes?'':'overflow:hidden;'}resize:none;" oninput="autoGrowTextarea(this);document.getElementById('notesCharCount').textContent=(5000-this.value.length)+' characters remaining'" placeholder="General notes about this animal">${escapeHtml(a.notes||'')}</textarea>
+      <div id="notesCharCount" style="font-size:13px;color:var(--grey);text-align:right;margin-top:2px;">${5000-(a.notes||'').length} characters remaining</div>
     </div>
     ${footerBar([
       {id:'details-help', icon:'help', label:'Help'},
@@ -6956,6 +7050,157 @@ function renderInjuryAdd(){
     ])}`;
 }
 
+// ---------- Farm details (Settings > Farm details) ----------
+// Free-text descriptions of the farm's fields, buildings, machinery and
+// anything else, so later features (and Ask, today) can suggest
+// improvements or funding. Each entry gets a transparent RAG completeness
+// rating: a plain keyword check against a per-type checklist, not an AI
+// score — it runs offline, costs nothing, and the farmer can always see
+// exactly why it's red/amber/green and what would turn it green. It checks
+// whether a topic's been MENTIONED, not whether what's said is right.
+const FD_CONDITION_RE=/good|poor|fair|leak|repair|derelict|\bnew\b|sound|\brot|rust|damag|collaps|replac|needs|\bok\b|decent|\bbad\b|working|broken|worn|reliable|faulty/;
+const FD_SCHEMES_RE=/\bsfi\b|stewardship|\bcs\b|\bels\b|\bhls\b|\bfetf\b|grant|scheme|agreement|funding|applied|declined|awarded|refused|rejected|approved/;
+const FARM_DETAIL_TYPES={
+  field:{
+    label:'Fields', singular:'field', addLabel:'field',
+    namePlaceholder:'e.g. Field 7 \u2013 Top Meadow',
+    detailsPlaceholder:'e.g. 14 acres permanent grass, heavy clay soil, wet in winter \u2013 can\u2019t get the tractor on after October. About 280m, north-facing slope. Hedges on 2 sides need laying, stock fence on the rest. Trough fed from the spring. Grazed by suckler cows Apr\u2013Oct. No SFI actions on it yet.',
+    checks:[
+      {key:'size', label:'Size (acres or hectares)', essential:true, re:/\d+(\.\d+)?\s*(acres?|ac\b|ha\b|hectares?)/},
+      {key:'use', label:'Land use (permanent grass, ley, arable, rough grazing\u2026)', essential:true, re:/grass|pasture|arable|\bley\b|meadow|crop|cereal|silage|\bhay\b|rough grazing|moor|scrub|stubble|maize|wheat|barley|oats/},
+      {key:'soil', label:'Soil type/quality (clay, loam, peat, stony\u2026)', essential:true, re:/soil|clay|loam|sand|silt|peat|chalk|stony|heavy|light land|thin/},
+      {key:'drainage', label:'Drainage (wet, dry, floods, drained\u2026)', essential:false, re:/\bwet|\bdry|drain|waterlog|bog|flood|free.draining|poach|puddl/},
+      {key:'terrain', label:'Altitude/slope/aspect (e.g. 280m, steep, south-facing)', essential:false, re:/\d+\s*(m\b|metres?|meters?|ft\b|feet)|altitude|slope|steep|\bflat\b|upland|lowland|\bhill|facing|aspect|valley|exposed/},
+      {key:'boundaries', label:'Boundaries (hedges, walls, fences, ditches)', essential:false, re:/hedge|\bwalls?\b|fenc|boundar|ditch|\bbank/},
+      {key:'water', label:'Water (troughs, streams, ponds, springs)', essential:false, re:/water|trough|stream|river|brook|pond|spring|\bburn\b|\bbeck\b/},
+      {key:'management', label:'How it\u2019s managed (grazing, cutting, fertiliser\u2026)', essential:false, re:/graz|stock|\bcut|topp|fertili|lime|spray|reseed|plough|rotation|rested|muck|slurry|manure/},
+      {key:'schemes', label:'Grants/schemes on it (current, past, declined)', essential:false, re:FD_SCHEMES_RE},
+    ],
+  },
+  building:{
+    label:'Buildings', singular:'building', addLabel:'building',
+    namePlaceholder:'e.g. Old stone barn',
+    detailsPlaceholder:'e.g. Stone barn, about 20m x 8m, built around 1900. Poor condition \u2013 roof leaks and needs replacing (asbestos sheets). Used for machinery storage and lambing pens. No mains water, electric lighting only. Owned outright. Rainwater runs off into the yard.',
+    checks:[
+      {key:'use', label:'What it\u2019s used for (housing, storage, workshop\u2026)', essential:true, re:/barn|shed|hous|store|storage|stable|parlour|workshop|byre|lambing|calving|feed|machinery|\bhay\b|straw|\bpens?\b|dairy|garage|kennel|empty|unused/},
+      {key:'construction', label:'Construction (stone, steel portal frame, timber\u2026)', essential:true, re:/stone|steel|timber|wood|block|brick|portal|concrete|frame|\btin\b|metal|cladding|breeze/},
+      {key:'condition', label:'Condition (good, poor, needs repair\u2026)', essential:true, re:FD_CONDITION_RE},
+      {key:'size', label:'Size (dimensions or number of bays)', essential:false, re:/\d+\s*(m\b|metres?|meters?|ft\b|feet|sq|square)|\d+\s*x\s*\d+|\bbays?\b/},
+      {key:'roof', label:'Roof (material, condition, asbestos?)', essential:false, re:/roof|asbestos|slate|gutter/},
+      {key:'age', label:'Age (year built or roughly how old)', essential:false, re:/\b(1[6-9]\d\d|20[0-2]\d)\b|built|years? old|\bold\b|\bage\b|decade|century|victorian/},
+      {key:'services', label:'Services (water, electric, drainage)', essential:false, re:/water|electric|power|light|drain|mains|solar/},
+      {key:'waste', label:'Slurry, manure or yard runoff', essential:false, re:/slurry|manure|midden|dung|run.?off|effluent|muck|yard/},
+      {key:'ownership', label:'Owned, rented or tenanted', essential:false, re:/\bown|rent|tenan|lease|landlord/},
+      {key:'schemes', label:'Grants/schemes (current, past, declined)', essential:false, re:FD_SCHEMES_RE},
+    ],
+  },
+  machinery:{
+    label:'Machinery', singular:'machine', addLabel:'machinery',
+    namePlaceholder:'e.g. Main tractor',
+    detailsPlaceholder:'e.g. Massey Ferguson 135 tractor, 1972, about 9,000 hours. Fair condition \u2013 starts fine but hydraulics leak. Owned. Used daily for feeding and topping. No GPS. We borrow a neighbour\u2019s cattle crush when TB testing.',
+    checks:[
+      {key:'type', label:'What it is (tractor, quad, trailer, crush, scales\u2026)', essential:true, re:/tractor|quad|\batv\b|\butv\b|gator|trailer|mower|baler|feeder|loader|crush|spreader|topper|harrow|plough|drill|sprayer|mixer|wagon|telehandler|handler|digger|rake|tedder|roller|scales|weigh|reader|chopper|bedder|hedge.?cutter|flail|pump|generator|pick.?up|land ?rover|vehicle/},
+      {key:'age', label:'Age (year or how old)', essential:true, re:/\b(19[4-9]\d|20[0-2]\d)\b|years? old|\bage\b|\bold\b|\bnew\b|\breg\b|registration|plate/},
+      {key:'condition', label:'Condition (working, worn, needs repair\u2026)', essential:true, re:FD_CONDITION_RE},
+      {key:'make', label:'Make/model', essential:false, re:/john deere|massey|\bmf\b|new holland|\bcase\b|kubota|claas|\bjcb\b|fendt|deutz|valtra|honda|yamaha|polaris|ifor williams|ritchie|mchale|kuhn|kverneland|mccormick|landini|\bford\b|zetor|manitou|merlo|tru.?test|gallagher|make|model|brand/},
+      {key:'usage', label:'How much it\u2019s used (hours, daily, seasonal\u2026)', essential:false, re:/\d[\d,]*\s*(hours|hrs|hr\b)|hours|used for|use[sd]?\s+(it\s+)?for|daily|weekly|seasonal|occasional|every day/},
+      {key:'ownership', label:'Owned, hired, leased or shared', essential:false, re:/\bown|hire|lease|contract|finance|borrow|shared|rent/},
+      {key:'tech', label:'Precision/tech features (GPS, EID reader, scales, low emissions)', essential:false, re:/\bgps\b|precision|auto.?steer|\beid\b|reader|weigh|scale|sensor|telematic|emission|electric|stage v|section control|variable rate|no gps/},
+      {key:'schemes', label:'Grants/schemes (bought with one, applied, declined)', essential:false, re:FD_SCHEMES_RE},
+    ],
+  },
+  other:{
+    label:'Other', singular:'item', addLabel:'item',
+    namePlaceholder:'e.g. Previous grants / Hedges / Woodland',
+    detailsPlaceholder:'e.g. Countryside Stewardship Mid Tier 2019\u20132024 for hedgerow restoration, completed. Applied for FETF in 2023 for a cattle handling system \u2013 declined. We\u2019d like to improve the water supply to the top fields.',
+    checks:[
+      {key:'describe', label:'A proper description (a couple of sentences)', essential:true, test:(t,d)=>d.trim().length>=60},
+      {key:'quantity', label:'Size, amount or date (a number of some kind)', essential:true, re:/\d/},
+      {key:'condition', label:'Condition or current state', essential:false, re:FD_CONDITION_RE},
+      {key:'location', label:'Where it is on the farm', essential:false, re:/field|\bnear\b|north|south|\beast\b|\bwest\b|yard|by the|next to|behind|along|around|top|bottom/},
+      {key:'plans', label:'Any plans, problems or things you\u2019d like to improve', essential:false, re:/plan|want|would like|like to|problem|issue|improve|replace|\bneed|hope|thinking|looking/},
+      {key:'schemes', label:'Grants/schemes (awarded, applied, declined)', essential:false, re:FD_SCHEMES_RE},
+    ],
+  },
+};
+const FARM_DETAIL_CATEGORIES=['field','building','machinery','other'];
+const FARM_DETAIL_MAX_CHARS=1000;
+// -> {rag:'red'|'amber'|'green', hits:{key:bool}, missingEssential:[labels], missingUseful:[labels]}
+// green = every key detail plus at least half the useful ones; amber = every
+// key detail, or all but one key detail with at least half the useful ones;
+// red = anything less. Blank details are always red.
+function farmDetailRating(category, name, details){
+  const def=FARM_DETAIL_TYPES[category]||FARM_DETAIL_TYPES.other;
+  const d=details||'';
+  const text=((name||'')+' \n '+d).toLowerCase();
+  const hits={};
+  def.checks.forEach(c=>{ hits[c.key] = c.test ? !!c.test(text,d) : c.re.test(text); });
+  const ess=def.checks.filter(c=>c.essential), use=def.checks.filter(c=>!c.essential);
+  const essHit=ess.filter(c=>hits[c.key]).length, useHit=use.filter(c=>hits[c.key]).length;
+  const useRatio=use.length?useHit/use.length:1;
+  let rag='red';
+  if(d.trim()){
+    if(essHit===ess.length && useRatio>=0.5) rag='green';
+    else if(essHit===ess.length || (essHit===ess.length-1 && useRatio>=0.5)) rag='amber';
+  }
+  return { rag, hits,
+    missingEssential: ess.filter(c=>!hits[c.key]).map(c=>c.label),
+    missingUseful: use.filter(c=>!hits[c.key]).map(c=>c.label) };
+}
+const FD_RAG_TEXT={green:'Good detail', amber:'Some gaps', red:'Needs more detail'};
+function farmDetailRagDot(rag, size){
+  const px=size||14;
+  return `<span title="${FD_RAG_TEXT[rag]}" style="display:inline-block;width:${px}px;height:${px}px;border-radius:50%;background:var(--${rag});flex-shrink:0;"></span>`;
+}
+// Short labels for the "missing" line on a list row — drops the bracketed examples.
+function fdShortLabel(l){ return l.replace(/\s*\(.*\)\s*$/,'').toLowerCase(); }
+function farmDetailChecklistHtml(category, name, details){
+  const def=FARM_DETAIL_TYPES[category];
+  const r=farmDetailRating(category, name, details);
+  const item=(c)=>{
+    const ok=r.hits[c.key];
+    return `<div style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;font-size:13.5px;color:${ok?'var(--ink)':'var(--grey)'};">
+      <span style="width:18px;flex-shrink:0;text-align:center;font-weight:800;color:${ok?'var(--green)':(c.essential?'var(--red)':'var(--grey-light)')};">${ok?'\u2713':'\u25CB'}</span>
+      <span style="flex:1;">${escapeHtml(c.label)}</span>
+    </div>`;
+  };
+  return `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+      ${farmDetailRagDot(r.rag,16)}
+      <span style="font-size:14px;font-weight:800;color:var(--${r.rag});">${FD_RAG_TEXT[r.rag]}</span>
+    </div>
+    <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:8px 0 2px;">Key details</div>
+    ${def.checks.filter(c=>c.essential).map(item).join('')}
+    <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:10px 0 2px;">Useful to add</div>
+    ${def.checks.filter(c=>!c.essential).map(item).join('')}`;
+}
+// Plain-text version of the checklist for a sub-expander's ? help popup.
+function farmDetailTypeHelpText(category){
+  const def=FARM_DETAIL_TYPES[category];
+  return 'What to include for each '+def.singular+':\n\nKey details (needed for amber/green):\n'
+    + def.checks.filter(c=>c.essential).map(c=>'\u2022 '+c.label).join('\n')
+    + '\n\nUseful to add (half or more of these for green):\n'
+    + def.checks.filter(c=>!c.essential).map(c=>'\u2022 '+c.label).join('\n')
+    + '\n\nThe rating only checks that each topic has been mentioned, not that what you\u2019ve written is right. Up to '+FARM_DETAIL_MAX_CHARS+' characters per entry \u2014 if you need more, add a second entry.';
+}
+function farmDetailIsDirty(){
+  const e=farmDetailEdit;
+  if(!e) return false;
+  if(!e.id) return !!((e.name||'').trim()||(e.details||'').trim());
+  const d=farmDetails.find(x=>x.id===e.id);
+  return !d || d.name!==e.name || (d.details||'')!==(e.details||'');
+}
+function fmtDateTimeShort(iso){
+  if(!iso) return '\u2014';
+  const d=new Date(iso);
+  return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+}
+function farmDetailModifiedLine(d){
+  if(!d.modified_at) return '';
+  const who=d.modified_by_name||d.modified_by_email||'';
+  return 'Last updated '+fmtDateTimeShort(d.modified_at)+(who?' by '+who:'');
+}
+
 function renderSettings(){
   const section=(key, label, countText, bodyHtml, addFormHtml)=>{
     const open=settingsOpenSection===key;
@@ -7106,12 +7351,69 @@ function renderSettings(){
       <input type="text" id="newFarmerVetName" placeholder="e.g. Dr. Smith">
     </div>`;
 
-  const testDataBody = `
-    <div style="font-size:13px;color:var(--grey);padding:2px 2px 12px;">Switch between the built-in demo dataset (animals, breeds, fodder types, medicine types, and farmers &amp; vets, for trying the app out) and a completely empty system ready for real farm records. The Admin login always stays available either way.</div>
-    <div class="formrow" style="padding:0 2px;"><label>Test data</label><div class="formctrl radiogroup" style="justify-content:flex-end;gap:14px;">
-      <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="testDataRadio" id="testDataLoaded" ${farmSettings.test_data_mode!=='cleared'?'checked':''}> Loaded</label>
-      <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="testDataRadio" id="testDataClear" ${farmSettings.test_data_mode==='cleared'?'checked':''}> Clear</label>
-    </div></div>`;
+  const farmDetailsBody=(()=>{
+    const intro=`<div style="font-size:13px;color:var(--grey);margin-bottom:10px;">Tell the app about your land and resources. Each entry is rated <span style="color:var(--red);font-weight:700;">red</span>/<span style="color:var(--amber);font-weight:700;">amber</span>/<span style="color:var(--green);font-weight:700;">green</span> for how much useful detail it has. Shared with everyone on this farm.</div>`;
+    return intro + FARM_DETAIL_CATEGORIES.map(cat=>{
+      const def=FARM_DETAIL_TYPES[cat];
+      const items=farmDetails.filter(d=>d.category===cat).slice().sort((a,b)=>a.name.localeCompare(b.name, undefined, {numeric:true}));
+      const open=farmDetailsOpenCat===cat;
+      const editingHere = open && farmDetailEdit && farmDetailEdit.category===cat;
+      const counts={red:0,amber:0,green:0};
+      items.forEach(d=>counts[farmDetailRating(cat,d.name,d.details).rag]++);
+      const ragSummary=items.length?`<span style="display:flex;gap:3px;margin-right:8px;">${['red','amber','green'].filter(k=>counts[k]).map(k=>`<span style="display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:var(--${k});border:1.5px solid #fff;font-size:11px;font-weight:800;color:#fff;">${counts[k]}</span>`).join('')}</span>`:'';
+      const rowHtml=(d)=>{
+        const r=farmDetailRating(cat,d.name,d.details);
+        const missing=[...r.missingEssential, ...r.missingUseful].map(fdShortLabel);
+        const missingText = r.rag==='green' ? '' : (missing.length?'Missing: '+missing.slice(0,3).join(', ')+(missing.length>3?' +'+(missing.length-3)+' more':''):'');
+        const firstLine=(d.details||'').split('\n')[0];
+        return `
+        <div class="row" data-editfarmdetail="${d.id}" style="cursor:pointer;align-items:flex-start;gap:10px;">
+          <div style="padding-top:3px;">${farmDetailRagDot(r.rag,14)}</div>
+          <div style="flex:1;min-width:0;">
+            <div class="name" style="font-size:15.5px;">${escapeHtml(d.name)}</div>
+            ${firstLine?`<div style="font-size:13px;color:var(--ink);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(firstLine)}</div>`:`<div style="font-size:13px;color:var(--grey);margin-top:2px;font-style:italic;">No details yet</div>`}
+            ${missingText?`<div style="font-size:12px;color:var(--${r.rag});margin-top:3px;font-weight:700;">${escapeHtml(missingText)}</div>`:''}
+            <div style="font-size:11.5px;color:var(--grey);margin-top:3px;">${escapeHtml(farmDetailModifiedLine(d))}</div>
+          </div>
+          <span style="color:var(--grey);width:16px;height:16px;flex-shrink:0;margin-top:3px;">${icon('triangleRight')}</span>
+        </div>`;
+      };
+      const formHtml=()=>{
+        const e=farmDetailEdit;
+        const existing=e.id?farmDetails.find(x=>x.id===e.id):null;
+        const remaining=FARM_DETAIL_MAX_CHARS-(e.details||'').length;
+        return `
+        <div style="margin-top:4px;">
+          <div style="font-size:14px;font-weight:800;color:var(--ink);margin-bottom:4px;">${existing?'Edit '+def.singular:'New '+def.singular}</div>
+          <label>Name</label>
+          <input type="text" id="fdName" maxlength="80" placeholder="${escapeHtml(def.namePlaceholder)}" value="${escapeHtml(e.name||'')}">
+          <div class="field-error" id="err-fdname"></div>
+          <label>Details</label>
+          <textarea id="fdDetails" maxlength="${FARM_DETAIL_MAX_CHARS}" style="min-height:150px;" placeholder="${escapeHtml(def.detailsPlaceholder)}">${escapeHtml(e.details||'')}</textarea>
+          <div id="fdCharCount" style="font-size:12px;color:${remaining<100?'var(--amber)':'var(--grey)'};text-align:right;margin-top:2px;">${remaining} characters remaining</div>
+          <div id="fdChecklist" style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px;">
+            ${farmDetailChecklistHtml(cat, e.name, e.details)}
+          </div>
+          ${existing&&existing.modified_at?`<div style="font-size:12px;color:var(--grey);margin-top:10px;">${escapeHtml(farmDetailModifiedLine(existing))}${existing.created_at&&existing.created_at!==existing.modified_at?'<br>Added '+escapeHtml(fmtDateTimeShort(existing.created_at))+(existing.created_by_name?' by '+escapeHtml(existing.created_by_name):''):''}</div>`:''}
+          <div style="display:flex;gap:8px;margin-top:14px;">
+            <button id="fdCancelBtn" class="fullbtn ghost" style="margin-top:0;flex:1;">Cancel</button>
+            ${existing?`<button id="fdDeleteBtn" class="fullbtn danger" style="margin-top:0;flex:1;display:flex;align-items:center;justify-content:center;gap:6px;"><span style="width:18px;height:18px;">${icon('trash')}</span>Delete</button>`:''}
+          </div>
+          <div style="font-size:12px;color:var(--grey);margin-top:8px;text-align:center;">Tap Save below to keep your changes.</div>
+        </div>`;
+      };
+      return `
+      <div style="margin:6px 0;">
+        <div class="damagebar" role="button" tabindex="0" data-toggle-fdcat="${cat}" style="background:var(--green);color:#fff;font-size:16px;padding:13px 14px;">
+          <span style="flex:1;text-align:left;">${def.label}</span>
+          ${ragSummary}
+          <button class="helpcircle" data-fdcathelp="${cat}" title="What to include" style="margin-right:8px;background:rgba(255,255,255,.28);">?</button>
+          <span style="width:20px;height:20px;flex-shrink:0;">${icon(open?'triangleDown':'triangleRight')}</span>
+        </div>
+        ${open?`<div class="damagepanel">${editingHere?formHtml():(items.map(rowHtml).join('')||`<div class="empty" style="padding:8px 4px;">No ${def.label.toLowerCase()} yet \u2014 tap Add.</div>`)}</div>`:''}
+      </div>`;
+    }).join('');
+  })();
 
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Settings</span><span></span></div>
@@ -7137,6 +7439,15 @@ function renderSettings(){
       ${section('feedtypes', 'Fodder', feedTypes.length, feedTypesBody, feedTypesAddForm)}
       ${section('medtypes', 'Medicine Cabinet', activeCabinetItems().length, medCabinetBody, '')}
       ${section('farmersvets', 'Farmers & vets', farmersVets.length, farmersVetsBody, farmersVetsAddForm)}
+      <div id="settingsSection-farmdetails" style="margin:8px 0;">
+        <div class="damagebar" role="button" tabindex="0" data-togglesettings="farmdetails" style="background:var(--grey);font-size:16px;padding:13px 14px;">
+          <span style="flex:1;text-align:left;">Farm details</span>
+          ${farmDetails.length?`<span class="pill" style="background:rgba(255,255,255,.28);font-size:15px;margin-right:8px;">${farmDetails.length}</span>`:''}
+          <button class="helpcircle" id="farmDetailsHelp" title="Help" style="margin-right:8px;">?</button>
+          <span style="width:20px;height:20px;flex-shrink:0;">${icon(settingsOpenSection==='farmdetails'?'triangleDown':'triangleRight')}</span>
+        </div>
+        ${settingsOpenSection==='farmdetails'?`<div class="damagepanel">${farmDetailsBody}</div>`:''}
+      </div>
       <div id="settingsSection-useai" style="margin:8px 0;">
         <button class="damagebar" data-togglesettings="useai" style="background:var(--grey);font-size:16px;padding:13px 14px;">
           <span>Use AI?</span>
@@ -7224,8 +7535,6 @@ function renderSettings(){
         </div>`:''}
       </div>
 
-      ${section('testdata', 'Test data', '', testDataBody, '')}
-
       <div id="settingsSection-whatsnew" style="margin:8px 0;">
         <button class="damagebar" data-togglesettings="whatsnew" style="background:var(--grey);font-size:16px;padding:13px 14px;">
           <span>What's new?</span>
@@ -7254,6 +7563,9 @@ function renderSettings(){
         (settingsShowAddForm ? [{id:'settings-save', icon:'save', label:'Save', primary:true}] : [{id:'settings-add', icon:'plus', label:'Add', primary:true}])
         : []),
       ...(settingsOpenSection==='medtypes' ? [{id:'settings-medcabinet-add', icon:'plus', label:'Add', primary:true}] : []),
+      ...(settingsOpenSection==='farmdetails' && farmDetailsOpenCat ?
+        (farmDetailEdit ? [{id:'settings-farmdetail-save', icon:'save', label:'Save', primary:true}] : [{id:'settings-farmdetail-add', icon:'plus', label:'Add', primary:true}])
+        : []),
       {id:'settings-home', icon:'home', label:'Home', home:true},
     ])}`;
 }
@@ -7369,19 +7681,45 @@ function renderFilterModal(){
   const old=screen.querySelector('.filter-modal-backdrop'); if(old) old.remove();
   const div=document.createElement('div');
   div.className='modal-backdrop filter-modal-backdrop';
-  const chips=[['active','Active'],['dead','Died'],['sold','Sold'],['swapped','Swapped'],['stolen','Stolen'],['voided','Removed']];
-  div.innerHTML=`<div class="modal">
+  const statuses=[['active','Active'],['dead','Died'],['sold','Sold'],['swapped','Swapped'],['stolen','Stolen'],['voided','Removed']];
+  const healthOpts=[[null,'Any'],['green','Green'],['amber','Amber'],['red','Red']];
+  div.innerHTML=`<div class="modal" style="max-height:80vh;overflow-y:auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <h3 style="margin:0;">Filter</h3>
       <button id="filterClose" style="background:none;border:none;color:var(--grey);width:30px;height:30px;">${icon('close')}</button>
     </div>
     <label>Status</label>
-    <div class="chips">${chips.map(([k,label])=>`<button class="chip ${statusFilter===k?'on':''}" data-filterstatus="${k}">${label}</button>`).join('')}</div>
+    <select id="filterStatus" style="font-size:15px;">
+      ${statuses.map(([k,label])=>`<option value="${k}" ${statusFilter===k?'selected':''}>${label}</option>`).join('')}
+    </select>
     <label>Breed</label>
     <select id="filterBreed" style="font-size:15px;">
       <option value="">All breeds</option>
       ${sortedBreeds(breeds).map(b=>`<option value="${b.id}" ${filterBreedId===b.id?'selected':''}>${b.name}</option>`).join('')}
     </select>
+    <label>BCS</label>
+    <select id="filterBcs" style="font-size:15px;">
+      <option value="" ${filterBcs==null?'selected':''}>Any</option>
+      ${[1,2,3,4,5].map(n=>`<option value="${n}" ${filterBcs===n?'selected':''}>${n}</option>`).join('')}
+    </select>
+    <label>Health</label>
+    <div class="chips">${healthOpts.map(([k,label])=>`<button class="chip ${filterHealth===k?'on':''}" data-filterhealth="${k===null?'':k}">${label}</button>`).join('')}</div>
+    <label style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;">
+      <span>Off farm</span>
+      <input type="checkbox" id="filterOffFarm" ${filterOffFarm?'checked':''} style="width:20px;height:20px;flex-shrink:0;accent-color:var(--green);">
+    </label>
+    <label style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;">
+      <span>Unweighed 60+ days</span>
+      <input type="checkbox" id="filterUnweighed60" ${filterUnweighed60?'checked':''} style="width:20px;height:20px;flex-shrink:0;accent-color:var(--green);">
+    </label>
+    <label style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;">
+      <span>TB test overdue</span>
+      <input type="checkbox" id="filterTbOverdue" ${filterTbOverdue?'checked':''} style="width:20px;height:20px;flex-shrink:0;accent-color:var(--green);">
+    </label>
+    <label style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;">
+      <span>Open injury</span>
+      <input type="checkbox" id="filterOpenInjury" ${filterOpenInjury?'checked':''} style="width:20px;height:20px;flex-shrink:0;accent-color:var(--green);">
+    </label>
     <div style="display:flex;gap:8px;margin-top:16px;">
       <button class="fullbtn ghost" id="filterReset" style="flex:1;margin-top:0;">Reset</button>
       <button class="fullbtn" id="filterApply" style="flex:1;margin-top:0;">Apply</button>
@@ -7389,9 +7727,19 @@ function renderFilterModal(){
   </div>`;
   screen.appendChild(div);
   document.getElementById('filterClose').onclick=()=>{showFilterModal=false; render();};
-  document.querySelectorAll('[data-filterstatus]').forEach(el=>el.onclick=()=>{statusFilter=el.dataset.filterstatus; herdShowAllHistory=false; render();});
+  document.getElementById('filterStatus').onchange=(e)=>{statusFilter=e.target.value; herdShowAllHistory=false;};
   document.getElementById('filterBreed').onchange=(e)=>{filterBreedId=e.target.value||null;};
-  document.getElementById('filterReset').onclick=()=>{statusFilter='active'; filterBreedId=null; herdShowAllHistory=false; render();};
+  document.getElementById('filterBcs').onchange=(e)=>{filterBcs=e.target.value?+e.target.value:null;};
+  document.querySelectorAll('[data-filterhealth]').forEach(el=>el.onclick=()=>{filterHealth=el.dataset.filterhealth||null; renderFilterModal();});
+  document.getElementById('filterOffFarm').onchange=(e)=>{filterOffFarm=e.target.checked;};
+  document.getElementById('filterUnweighed60').onchange=(e)=>{filterUnweighed60=e.target.checked;};
+  document.getElementById('filterTbOverdue').onchange=(e)=>{filterTbOverdue=e.target.checked;};
+  document.getElementById('filterOpenInjury').onchange=(e)=>{filterOpenInjury=e.target.checked;};
+  document.getElementById('filterReset').onclick=()=>{
+    statusFilter='active'; filterBreedId=null; herdShowAllHistory=false;
+    filterOffFarm=false; filterBcs=null; filterHealth=null; filterUnweighed60=false; filterTbOverdue=false; filterOpenInjury=false;
+    render();
+  };
   document.getElementById('filterApply').onclick=()=>{showFilterModal=false; render();};
 }
 
@@ -8150,9 +8498,10 @@ function renderModal(){
         <div style="display:flex;gap:8px;">
           <div class="searchwrap" style="flex:1;"><input type="text" id="movePickSearch" autocomplete="off" placeholder="Search tag, name, breed" value="${(modal.term||'').replace(/"/g,'&quot;')}">${searchClearMarkup('movePickSearch')}</div>
           <button id="movePickScan" style="background:var(--primary);color:#fff;border:none;border-radius:8px;padding:0 14px;display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px;white-space:nowrap;flex-shrink:0;">${icon('camera')}Scan</button>
+          <button class="helpcircle" id="movePickHelp">?</button>
         </div>
         <div id="movePickStatus" style="font-size:13px;color:var(--grey);margin-top:6px;display:none;"></div>
-        <div style="font-size:13px;color:var(--grey);margin-top:4px;">Scan reads the animal's EID tag and adds it automatically, one after another, as animals go onto the transport.</div>
+        ${activeAnimals.length?`<button id="movePickSelectAll" class="fullbtn ghost" style="margin-top:8px;padding:8px;font-size:14px;">Select all (${activeAnimals.length})</button>`:''}
       </div>
       <div id="movePickList" style="flex:1;overflow-y:auto;padding:4px 16px;">
         ${activeAnimals.length? activeAnimals.map(a=>{
@@ -8752,6 +9101,22 @@ function renderModal(){
       showSaveToast(result==='removed'?'Removed':'Added');
     });
     document.getElementById('movePickScan').onclick=()=>{ performTagScan('move', 'movePickStatus'); };
+    document.getElementById('movePickHelp').onclick=()=>{ showInfoModal('Scan reads the animal\u2019s EID tag and adds it automatically, one after another, as animals go onto the transport.'); };
+    const movePickSelectAllBtn=document.getElementById('movePickSelectAll');
+    if(movePickSelectAllBtn) movePickSelectAllBtn.onclick=async()=>{
+      // Whatever rows are actually on screen right now — already reflects
+      // the search term, so this only adds what the farmer can currently
+      // see, not the whole herd. Animals already on the move are left
+      // alone rather than re-added.
+      const visibleIds=[...document.querySelectorAll('[data-pickmoveanimal]')].map(el=>el.dataset.pickmoveanimal);
+      const newlyAdded=visibleIds.filter(id=>!moveAnimalIds.includes(id));
+      if(!newlyAdded.length) return;
+      moveAnimalIds=[...moveAnimalIds, ...newlyAdded];
+      await commitMoveEntry();
+      queueMoveRiskWarnings(newlyAdded, {type:'movePickAnimal', term: modal && modal.term});
+      renderModal();
+      if(modal && modal.type==='movePickAnimal') showSaveToast('Added '+newlyAdded.length);
+    };
     document.getElementById('movePickDone').onclick=()=>{
       modal=null; render();
       // A toast here used to fade on its own timer regardless of whether it
@@ -9245,7 +9610,7 @@ function wireView(){
   if(view==='home'){
     document.getElementById('home-help').onclick=()=>{ showInfoModal('Home. Click the home icon on any screen to return here.'); };
     document.getElementById('switchUserBtn').onclick=()=>{ modal={type:'switchUser'}; render(); };
-    document.getElementById('home-animals').onclick=()=>{ view='herd'; statusFilter='active'; searchTerm=''; filterBreedId=null; herdShowAllHistory=false; render(); };
+    document.getElementById('home-animals').onclick=()=>{ view='herd'; statusFilter='active'; searchTerm=''; filterBreedId=null; herdShowAllHistory=false; filterOffFarm=false; filterBcs=null; filterHealth=null; filterUnweighed60=false; filterTbOverdue=false; filterOpenInjury=false; render(); };
     document.getElementById('home-addanimal').onclick=()=>{ view='add'; newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null; newAnimalPassportScanned=false; newAnimalIsCross=false; newAnimalEidManuallyEntered=false; render(); };
     document.getElementById('home-move').onclick=()=>{
       view='move'; cameFromSummary=false; moveDate=todayStr(); moveGps=null; moveAnimalIds=[]; moveSessionRecordId=null; moveLocationVal=''; moveReasonVal=''; moveDirection=null; moveDestCphVal=''; moveHistoryScope=null; moveHistoryExpanded=false; expandedMoveHistoryId=null; moveWarningsSuppressed=false;
@@ -9273,6 +9638,15 @@ function wireView(){
     wireSearchClear('searchInput');
     const herdShowAllBtn=document.getElementById('herdShowAllHistory');
     if(herdShowAllBtn) herdShowAllBtn.onclick=()=>{ herdShowAllHistory=true; render(); };
+    const herdSelectAllBtn=document.getElementById('herdSelectAllBtn');
+    if(herdSelectAllBtn) herdSelectAllBtn.onclick=()=>{
+      // Whatever rows are actually on screen right now — already reflects
+      // the search term, status filter, and breed filter, so this only
+      // ever selects what the farmer can currently see, not the whole herd.
+      herdSelectedIds=[...document.querySelectorAll('tr[data-openrow]')].map(row=>row.dataset.openrow);
+      herdSelectMode=herdSelectedIds.length>0;
+      render();
+    };
     document.querySelectorAll('[data-sort]').forEach(el=>el.onclick=()=>{
       const col=el.dataset.sort;
       if(sortColumn===col) sortDir = sortDir==='asc'?'desc':'asc'; else { sortColumn=col; sortDir='asc'; }
@@ -9361,7 +9735,7 @@ function wireView(){
     });
     document.getElementById('herd-help').onclick=()=>{
       if(herdSelectMode){ showInfoModal('Tap more animals to add them to the selection, then tap Move to move them all together. Tap the back arrow to cancel.'); return; }
-      showInfoModal('\u2022 All active animals display by default.\n\n\u2022 Filter to show previous animals.\n\n\u2022 Tap column heading to sort.\n\n\u2022 Tap EID/name to see its Summary.\n\n\u2022 Tap Profit, BCS, or Health to jump straight to that detail.\n\n\u2022 Press and hold an animal to select several at once and move them together.');
+      showInfoModal('\u2022 All active animals display by default.\n\n\u2022 Filter by status, breed, BCS, health, off-farm, or the same checks as Attention (unweighed 60+ days, TB test overdue, open injury).\n\n\u2022 Tap column heading to sort.\n\n\u2022 Tap EID/name to see its Summary.\n\n\u2022 Tap Profit, BCS, or Health to jump straight to that detail.\n\n\u2022 Select all picks whatever\u2019s currently visible.\n\n\u2022 Press and hold an animal to select several at once and move them together.');
     };
     const herdFilterBtn=document.getElementById('herd-filter');
     if(herdFilterBtn) herdFilterBtn.onclick=()=>{ showFilterModal=true; render(); };
@@ -9419,6 +9793,7 @@ function wireView(){
   }
   if(view==='animalDetails'){
     wireGoKeySubmit('saveDetails');
+    autoGrowTextarea(document.getElementById('f-notes'));
     const breedCrossToggleEdit=document.getElementById('breedCrossToggle');
     if(breedCrossToggleEdit) breedCrossToggleEdit.onclick=()=>{
       editAnimalIsCross=!editAnimalIsCross;
@@ -9508,6 +9883,8 @@ function wireView(){
       a.weaned_weight_kg=wwRaw?parseFloat(wwRaw):null;
       const ppRaw=document.getElementById('f-purchaseprice').value.trim();
       a.purchase_price=ppRaw?parseFloat(ppRaw):null;
+      const notesField=document.getElementById('f-notes');
+      if(notesField) a.notes=notesField.value.trim()||null;
       if(editAnimalEid!==undefined) a.eid=editAnimalEid;
       if(editAnimalMotherId!==undefined) a.mother_id=editAnimalMotherId;
       if(editAnimalMotherExternalEid!==undefined) a.mother_external_eid=editAnimalMotherExternalEid;
@@ -10452,40 +10829,6 @@ Rules:
       logMsg(farmSettings.groq_api_key ? 'Groq API key saved \u2014 shared with everyone signed in to this farm.' : 'Groq API key removed \u2014 tag scans will use the built-in offline reader only.');
       showSaveToast('Updated');
     };
-    const testDataClearEl=document.getElementById('testDataClear');
-    if(testDataClearEl){
-      testDataClearEl.onchange=()=>{
-        showConfirmModal(
-          'This will permanently delete all animal information, fodder types, medicine types (except TB test), breeds, and farmers & vets. This can\u2019t be undone. Continue?',
-          async()=>{
-            clearAllFarmData();
-            await persistAll();
-            logMsg('Cleared all test data. Animals, fodder types, medicine types (except TB test), breeds, and farmers & vets were removed.');
-            render();
-            showSaveToast('Cleared');
-          },
-          ()=>render() // reverts the radio back to Loaded since nothing actually changed
-        );
-      };
-    }
-    const testDataLoadedEl=document.getElementById('testDataLoaded');
-    if(testDataLoadedEl){
-      testDataLoadedEl.onchange=()=>{
-        const hasRealData = animals.length>0 || feedTypes.length>0 || breeds.length>0 || farmersVets.length>0 || medicineTypes.some(m=>!m.locked);
-        const proceed=async()=>{
-          loadDemoTestData();
-          await persistAll();
-          logMsg('Loaded demo test data.');
-          render();
-          showSaveToast('Loaded');
-        };
-        if(hasRealData){
-          showConfirmModal('This will replace your current animals, fodder types, medicine types, breeds, and farmers & vets with the demo dataset. Continue?', proceed, ()=>render());
-        } else {
-          proceed();
-        }
-      };
-    }
     document.getElementById('farmLocationBtn').onclick=()=>{
       const errEl=document.getElementById('err-farmlocation'); errEl.textContent='';
       if(!navigator.geolocation){ errEl.textContent='Location isn\u2019t available on this device.'; return; }
@@ -10511,6 +10854,7 @@ Rules:
       const wasOpen = settingsOpenSection===key;
       settingsOpenSection = wasOpen ? null : key;
       settingsShowAddForm=false;
+      farmDetailEdit=null;
       render();
       if(!wasOpen){
         const target=document.getElementById('settingsSection-'+key);
@@ -10673,6 +11017,112 @@ Rules:
       scrollSettingsSectionIntoView();
     });
 
+    // ---- Farm details ----
+    const farmDetailsHelpBtn=document.getElementById('farmDetailsHelp');
+    if(farmDetailsHelpBtn) farmDetailsHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('Add as much detail about your farm/resources as possible. The app may then be able to suggest improvements/grants based on the info given e.g. types of field, size, soil type, altitude, lack of hedges, previous grants granted/declined etc.\n\nUse Fields, Buildings, Machinery, or Other for anything else (woodland, water supply, hedges, labour, previous grant applications). Tap the ? on each one to see what to include.'); };
+    document.querySelectorAll('[data-fdcathelp]').forEach(el=>el.onclick=(e)=>{ e.stopPropagation(); showInfoModal(farmDetailTypeHelpText(el.dataset.fdcathelp)); });
+    const fdToggle=(el)=>{
+      const cat=el.dataset.toggleFdcat;
+      const wasOpen=farmDetailsOpenCat===cat;
+      const go=()=>{
+        farmDetailsOpenCat = wasOpen ? null : cat;
+        farmDetailEdit=null;
+        render();
+        if(!wasOpen){ const t=document.querySelector('[data-toggle-fdcat="'+cat+'"]'); if(t) t.scrollIntoView({block:'start', behavior:'smooth'}); }
+      };
+      if(farmDetailEdit && farmDetailIsDirty()) showConfirmModal('Discard your unsaved changes?', go, null, 'Discard', 'Keep editing');
+      else go();
+    };
+    document.querySelectorAll('[data-toggle-fdcat]').forEach(el=>{
+      el.onclick=()=>fdToggle(el);
+      el.onkeydown=(e)=>{ if(e.target===el && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); fdToggle(el); } };
+    });
+    const settingsBarKeys=document.querySelectorAll('div[data-togglesettings]');
+    settingsBarKeys.forEach(el=>el.onkeydown=(e)=>{ if(e.target===el && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); el.click(); } });
+    document.querySelectorAll('[data-editfarmdetail]').forEach(el=>el.onclick=()=>{
+      const d=farmDetails.find(x=>x.id===el.dataset.editfarmdetail);
+      if(!d) return;
+      farmDetailEdit={id:d.id, category:d.category, name:d.name, details:d.details||''};
+      render();
+      const t=document.getElementById('fdName'); if(t) t.scrollIntoView({block:'center', behavior:'smooth'});
+    });
+    const fdAddBtn=document.getElementById('settings-farmdetail-add');
+    if(fdAddBtn) fdAddBtn.onclick=()=>{
+      farmDetailEdit={id:null, category:farmDetailsOpenCat, name:'', details:''};
+      render();
+      const t=document.getElementById('fdName'); if(t){ t.scrollIntoView({block:'center', behavior:'smooth'}); t.focus(); }
+    };
+    const fdNameEl=document.getElementById('fdName'), fdDetailsEl=document.getElementById('fdDetails');
+    // Live checklist/counter — patches just those two bits of the DOM rather
+    // than re-rendering, so typing never loses focus or the cursor position.
+    const fdLiveUpdate=()=>{
+      if(!farmDetailEdit) return;
+      farmDetailEdit.name=fdNameEl.value;
+      farmDetailEdit.details=fdDetailsEl.value;
+      const remaining=FARM_DETAIL_MAX_CHARS-fdDetailsEl.value.length;
+      const cc=document.getElementById('fdCharCount');
+      if(cc){ cc.textContent=remaining+' characters remaining'; cc.style.color=remaining<100?'var(--amber)':'var(--grey)'; }
+      const cl=document.getElementById('fdChecklist');
+      if(cl) cl.innerHTML=farmDetailChecklistHtml(farmDetailEdit.category, farmDetailEdit.name, farmDetailEdit.details);
+      const err=document.getElementById('err-fdname'); if(err && fdNameEl.value.trim()) err.textContent='';
+    };
+    if(fdNameEl) fdNameEl.oninput=fdLiveUpdate;
+    // Enter/Next on the Name box goes to Details rather than saving —
+    // captured on the parent so it runs before wireGoKeySubmit's handler.
+    if(fdNameEl && fdDetailsEl) fdNameEl.parentElement.addEventListener('keydown', (e)=>{
+      if(e.target!==fdNameEl || (e.key!=='Enter' && e.keyCode!==13)) return;
+      e.preventDefault(); e.stopPropagation();
+      fdDetailsEl.focus();
+    }, true);
+    if(fdNameEl) fdNameEl.setAttribute('enterkeyhint','next');
+    if(fdDetailsEl) fdDetailsEl.oninput=fdLiveUpdate;
+    const fdCancelBtn=document.getElementById('fdCancelBtn');
+    if(fdCancelBtn) fdCancelBtn.onclick=()=>{
+      const go=()=>{ farmDetailEdit=null; render(); };
+      if(farmDetailIsDirty()) showConfirmModal('Discard your unsaved changes?', go, null, 'Discard', 'Keep editing');
+      else go();
+    };
+    const fdDeleteBtn=document.getElementById('fdDeleteBtn');
+    if(fdDeleteBtn) fdDeleteBtn.onclick=()=>{
+      const d=farmDetails.find(x=>x.id===farmDetailEdit.id);
+      if(!d) return;
+      showConfirmModal('Delete \u201c'+d.name+'\u201d?\n\nThis permanently removes it for everyone on this farm and can\u2019t be undone.', async()=>{
+        const i=farmDetails.findIndex(x=>x.id===d.id);
+        if(i>-1) farmDetails.splice(i,1);
+        farmDetailEdit=null;
+        await persistAll();
+        await deleteFarmDetailFromSupabase(d.id);
+        logMsg('Deleted farm detail <b>'+escapeHtml(d.name)+'</b>.');
+        render();
+        showSaveToast('Deleted');
+      }, null, 'Delete', 'Cancel');
+    };
+    const fdSaveBtn=document.getElementById('settings-farmdetail-save');
+    if(fdSaveBtn) fdSaveBtn.onclick=async()=>{
+      if(!farmDetailEdit) return;
+      const name=(document.getElementById('fdName')||{value:farmDetailEdit.name}).value.trim();
+      const details=((document.getElementById('fdDetails')||{value:farmDetailEdit.details}).value||'').slice(0,FARM_DETAIL_MAX_CHARS);
+      if(!name){ const err=document.getElementById('err-fdname'); if(err) err.textContent='Give it a name so you can find it again.'; return; }
+      const now=new Date().toISOString();
+      const who=(currentFarmerName&&currentFarmerName!=='Admin')?currentFarmerName:((authUser&&authUser.email)||currentFarmerName||'Admin');
+      const email=authUser?authUser.email:null;
+      let rec;
+      if(farmDetailEdit.id){
+        rec=farmDetails.find(x=>x.id===farmDetailEdit.id);
+        if(!rec){ farmDetailEdit=null; render(); showInfoModal('This entry was deleted by someone else while you were editing it.'); return; }
+        rec.name=name; rec.details=details; rec.modified_at=now; rec.modified_by_name=who; rec.modified_by_email=email;
+      } else {
+        rec={id:uuid(), category:farmDetailEdit.category, name, details, created_at:now, created_by_name:who, modified_at:now, modified_by_name:who, modified_by_email:email};
+        farmDetails.push(rec);
+      }
+      farmDetailEdit=null;
+      await persistAll();
+      await syncFarmDetailToSupabase(rec);
+      const r=farmDetailRating(rec.category, rec.name, rec.details);
+      logMsg('Saved farm detail <b>'+escapeHtml(rec.name)+'</b> ('+r.rag+').');
+      render();
+      showSaveToast(r.rag==='green'?'Saved \u2014 good detail':'Saved \u2014 '+FD_RAG_TEXT[r.rag].toLowerCase());
+    };
     // Add/Save for whichever addable section (Breeds, Fodder types, Medicine,
     // Farmers & vets) is currently expanded now lives in the footer, not
     // inline in the panel — one Add/Save button, routed by settingsOpenSection.
