@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23i';
+const APP_BUILD_VERSION = '2026-09-23j';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-23i';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23j',
+    date: '23 Sep 2026',
+    bullets: [
+      "Animal List: selecting animals (press and hold) now shows a TB test button alongside Move. It records both tuberculins for every selected animal in one go \u2014 pick the vet, enter each tuberculin's batch number and expiry date once, and it saves 0.1ml Injection, Routine husbandry, \u00a30.00 for every animal, exactly as if entered one by one. The batch/expiry also update the Medicine Cabinet's TB testing entry."
+    ]
+  },
   {
     version: '2026-09-23i',
     date: '23 Sep 2026',
@@ -2423,7 +2430,7 @@ function ensureTbTestMedicineType(sync){
       existing.active=true; existing.withdrawal_days=0; existing.cost=0; existing.dosage_per_kg=null; existing.type='TB test';
       if(changed && sync && typeof syncMedicineTypeToSupabase==='function') syncMedicineTypeToSupabase(existing);
     } else {
-      const tb={id:uuid(), name:t.name, type:'TB test', withdrawal_days:0, cost:0, dosage_per_kg:null, qty_unit:'ml', active:true, locked:true};
+      const tb={id:uuid(), name:t.name, type:'TB test', withdrawal_days:0, cost:0, dosage_per_kg:null, qty_unit:'ml', batch_no:null, expiry_date:null, active:true, locked:true};
       medicineTypes.push(tb);
       if(sync && typeof syncMedicineTypeToSupabase==='function') syncMedicineTypeToSupabase(tb);
     }
@@ -3227,6 +3234,7 @@ let editAnimalMotherId, editAnimalMotherExternalEid, editAnimalFatherId, editAni
 let selectedId=null, statusFilter='active', searchTerm='', modal=null, filterBreedId=null, herdShowAllHistory=false;
 let filterOffFarm=false, filterBcs=null, filterHealth=null, filterUnweighed60=false, filterTbOverdue=false, filterOpenInjury=false;
 let herdSelectMode=false, herdSelectedIds=[];
+let tbBulkAnimalIds=[]; // animals a bulk TB test is being recorded for (Animal List > select > TB test)
 
 // ================= NAVIGATION HISTORY (back arrow + swipe-right) =================
 let navStack=[];
@@ -3462,6 +3470,10 @@ function goBack(){
   }
   if(hasUnsavedFeedAddData()){
     showConfirmModal('Discard new fodder record?', goBackContinue);
+    return;
+  }
+  if(hasUnsavedTbBulkData()){
+    showConfirmModal('Discard this TB test?', goBackContinue);
     return;
   }
   if(hasUnsavedWeighChanges()){
@@ -4010,7 +4022,7 @@ function render(){
   const dispatch={
     home:renderHome, herd:renderHerd, detail:renderDetail, animalDetails:renderAnimalDetails,
     archive:renderArchive, profitScore:renderProfitScore,
-    add:renderAdd, settings:renderSettings, weigh:renderWeigh, feed:renderFeed, feedAdd:renderFeedAdd, medicine:renderMedicine, medicineAdd:renderMedicineAdd, medCabinetAdd:renderMedCabinetAdd, medDispose:renderMedDispose, injury:renderInjury, injuryAdd:renderInjuryAdd,
+    add:renderAdd, settings:renderSettings, weigh:renderWeigh, feed:renderFeed, feedAdd:renderFeedAdd, medicine:renderMedicine, medicineAdd:renderMedicineAdd, medicineAddTbBulk:renderMedicineAddTbBulk, medCabinetAdd:renderMedCabinetAdd, medDispose:renderMedDispose, injury:renderInjury, injuryAdd:renderInjuryAdd,
     breeding:renderBreeding,
     move:renderMove,
     damage:renderDamageList, damageAdd:renderDamageAdd, healthScore:renderHealthScoreScreen,
@@ -6488,6 +6500,7 @@ function renderHerd(){
     </div>
     ${footerBar(herdSelectMode ? [
       {id:'herd-help', icon:'help', label:'Help'},
+      {id:'herd-tbtest', icon:'syringe', label:'TB test', bordered:true},
       {id:'herd-move', icon:'pin', label:'Move', primary:true},
       {id:'herd-home', icon:'home', label:'Home', home:true},
     ] : [
@@ -7414,6 +7427,44 @@ function renderMedicine(){
     ])}`;
 }
 
+function renderMedicineAddTbBulk(){
+  const n=tbBulkAnimalIds.length;
+  const today=todayStr();
+  return `
+    <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>${escapeHtml('<Multiple animals>')}</span><span></span></div>
+    <div class="body">
+      <div style="text-align:center;font-size:14px;color:var(--grey);margin-top:6px;">Recording a TB test for <b>${n}</b> animal${n===1?'':'s'}</div>
+
+      <div class="formrow" style="margin-top:10px;"><label>Farmer / Vet</label><div class="formctrl">
+        <select id="tbbulk-farmervet"><option value="" selected>\u2014 Select \u2014</option>${sortedBreeds(farmersVets.filter(p=>p.active)).map(p=>`<option value="${p.id}">${p.name} (${p.role})</option>`).join('')}<option value="__addnew__">+ Add new person</option></select>
+      </div></div>
+      <div class="field-error" id="err-tbbulk-farmervet" style="padding:0 2px;"></div>
+
+      <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:16px 2px 2px;">Avian tuberculin</div>
+      <div class="formrow"><label>Batch No.</label><div class="formctrl"><input type="text" id="tbbulk-avian-batch" placeholder="e.g. AV4471"></div></div>
+      <div class="formrow"><label>Expiry date</label><div class="formctrl">${dateFieldWithJump(`<input type="date" id="tbbulk-avian-expiry" style="flex:1;min-width:0;">`,'tbbulk-avian-expiry')}</div></div>
+
+      <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:16px 2px 2px;">Bovine tuberculin</div>
+      <div class="formrow"><label>Batch No.</label><div class="formctrl"><input type="text" id="tbbulk-bovine-batch" placeholder="e.g. BV4471"></div></div>
+      <div class="formrow"><label>Expiry date</label><div class="formctrl">${dateFieldWithJump(`<input type="date" id="tbbulk-bovine-expiry" style="flex:1;min-width:0;">`,'tbbulk-bovine-expiry')}</div></div>
+      <div class="field-error" id="err-tbbulk" style="padding:0 2px;"></div>
+
+      <div style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:14px;font-size:13.5px;color:var(--grey);">
+        Every animal gets 0.1ml of each, by Injection, logged as Routine husbandry. Cost/dose is \u00a30.00 \u2014 the farmer doesn\u2019t pay for TB testing.
+      </div>
+    </div>
+    ${footerBar([
+      {id:'tbbulk-help', icon:'help', label:'Help'},
+      {id:'tbbulk-save', icon:'save', label:'Save', primary:true},
+      {id:'tbbulk-home', icon:'home', label:'Home', home:true},
+    ])}`;
+}
+function hasUnsavedTbBulkData(){
+  if(view!=='medicineAddTbBulk') return false;
+  const val=(id)=>{ const el=document.getElementById(id); return el ? el.value.trim() : ''; };
+  return !!(val('tbbulk-farmervet') || val('tbbulk-avian-batch') || val('tbbulk-avian-expiry') || val('tbbulk-bovine-batch') || val('tbbulk-bovine-expiry'));
+}
+
 function renderMedicineAdd(){
   const a=animals.find(x=>x.id===healthTarget);
   if(!a) return '<div class="empty">Animal not found.</div>';
@@ -8045,13 +8096,14 @@ function renderSettings(){
         </button>
         ${tbOpen?`<div class="damagepanel">
           <div style="font-size:13px;color:var(--grey);margin-bottom:6px;">Both are given together by the vet for every TB test, 0.1ml each. Record both \u2014 the test only counts once both are in.</div>
-          ${TB_TUBERCULINS.map(t=>`
+          ${TB_TUBERCULINS.map(tbT=>{ const t=tbTuberculinType(tbT.name)||{}; return `
           <div class="row" style="cursor:default;align-items:flex-start;">
             <div style="flex:1;min-width:0;">
-              <div class="name">${escapeHtml(t.name)}</div>
+              <div class="name">${escapeHtml(tbT.name)}</div>
               <div style="font-size:12.5px;color:var(--grey);margin-top:2px;">Dose ${TB_TUBERCULIN_DOSE_ML}ml \u00b7 Withdrawal 0 days \u00b7 Cost ${fmtGBP(0)} \u00b7 Dosage/kg \u2014</div>
+              ${(t.batch_no||t.expiry_date)?`<div style="font-size:12.5px;color:var(--grey);margin-top:2px;">${t.batch_no?'Last batch '+escapeHtml(t.batch_no):'Batch \u2014'} \u00b7 ${t.expiry_date?'Expiry '+fmtDate(t.expiry_date):'Expiry \u2014'}</div>`:''}
             </div>
-          </div>`).join('')}
+          </div>`; }).join('')}
         </div>`:''}
       </div>`;
 
@@ -10497,6 +10549,13 @@ function wireView(){
     if(herdFilterBtn) herdFilterBtn.onclick=()=>{ showFilterModal=true; render(); };
     const herdScanBtn=document.getElementById('herd-scan');
     if(herdScanBtn) herdScanBtn.onclick=()=>{ performTagScan('lookup', null); };
+    const herdTbTestBtn=document.getElementById('herd-tbtest');
+    if(herdTbTestBtn) herdTbTestBtn.onclick=()=>{
+      tbBulkAnimalIds=[...herdSelectedIds];
+      herdSelectMode=false; herdSelectedIds=[];
+      view='medicineAddTbBulk';
+      render();
+    };
     const herdMoveBtn=document.getElementById('herd-move');
     if(herdMoveBtn) herdMoveBtn.onclick=()=>{
       view='move'; cameFromSummary=false; moveDate=todayStr(); moveGps=null; moveSessionRecordId=null;
@@ -12679,6 +12738,67 @@ Rules:
       window.open('mailto:?subject='+encodeURIComponent('Medicine record: '+(animalDisplayName(a)))+'&body='+encodeURIComponent(body||'No medicine recorded.'));
     };
     document.getElementById('med-add').onclick=()=>{ medAddPhoto=null; medAddDefaultReason=null; medAddInjuryId=null; medBulkActive=false; medBulkCarry=null; view='medicineAdd'; render(); };
+  }
+  if(view==='medicineAddTbBulk'){
+    wireGoKeySubmit('tbbulk-save');
+    document.getElementById('tbbulk-help').onclick=()=>{ showInfoModal('\u2022 Records both TB skin test injections \u2014 Avian and Bovine tuberculin \u2014 for every selected animal in one go.\n\n\u2022 Each animal gets 0.1ml of each, by Injection, at \u00a30.00 cost, logged as Routine husbandry \u2014 the same as adding them one by one.\n\n\u2022 Batch No. and Expiry date are entered once here and applied to every animal, and also update the Medicine Cabinet\u2019s TB testing entry.'); };
+    document.getElementById('tbbulk-farmervet').onchange=(e)=>{
+      if(e.target.value==='__addnew__'){
+        view='settings'; settingsOpenSection='farmersvets'; settingsShowAddForm=true;
+        render();
+        const target=document.getElementById('settingsSection-farmersvets');
+        if(target) target.scrollIntoView({block:'start', behavior:'smooth'});
+      }
+    };
+    document.getElementById('tbbulk-save').onclick=async()=>{
+      const errFv=document.getElementById('err-tbbulk-farmervet'); errFv.textContent='';
+      const errEl=document.getElementById('err-tbbulk'); errEl.textContent='';
+      const farmerVetIdVal=document.getElementById('tbbulk-farmervet').value;
+      const avianBatch=document.getElementById('tbbulk-avian-batch').value.trim();
+      const avianExpiry=document.getElementById('tbbulk-avian-expiry').value;
+      const bovineBatch=document.getElementById('tbbulk-bovine-batch').value.trim();
+      const bovineExpiry=document.getElementById('tbbulk-bovine-expiry').value;
+      if(!farmerVetIdVal){ errFv.textContent='Select who\u2019s giving the test.'; document.getElementById('tbbulk-farmervet').focus(); return; }
+      const missing=[];
+      if(!avianBatch) missing.push('Avian batch no.');
+      if(!avianExpiry) missing.push('Avian expiry date');
+      if(!bovineBatch) missing.push('Bovine batch no.');
+      if(!bovineExpiry) missing.push('Bovine expiry date');
+      if(missing.length){ errEl.textContent='Enter: '+missing.join(', ')+'.'; return; }
+      const stillValid=tbBulkAnimalIds.filter(id=>animals.some(a=>a.id===id));
+      if(!stillValid.length){ showInfoModal('These animals are no longer available.'); view='herd'; render(); return; }
+      const avianType=tbTuberculinType('Avian tuberculin'), bovineType=tbTuberculinType('Bovine tuberculin');
+      const now=new Date().toISOString(); // shared instant for every record — keeps each animal's avian/bovine pair well inside the pairing window
+      const newRecs=[];
+      stillValid.forEach(animalId=>{
+        const lw=lastWeightRecord(animalId);
+        [[avianType,avianBatch,avianExpiry],[bovineType,bovineBatch,bovineExpiry]].forEach(([type,batch,expiry])=>{
+          const rec={
+            id:uuid(), animal_id:animalId, medicine_type_id:type?type.id:null, product_name:type?type.name:'TB test',
+            farmer_vet_id:farmerVetIdVal, stock:'vet', reason:'routine', injury_id:null,
+            cost:0, batch_no:batch, expiry_date:expiry, animal_weight_kg:lw?lw.weight_kg:null,
+            dosage_amount:TB_TUBERCULIN_DOSE_ML, dosage_unit:'ml', method_given:'Injection', photo_data:null,
+            administered_at:now, withdrawal_until:null, note:null, farmer_id:currentFarmerId,
+          };
+          medicineRecords.push(rec);
+          newRecs.push(rec);
+        });
+      });
+      // The batch/expiry just entered become this type's current values in
+      // the Medicine Cabinet, same as any other medicine — overwritten by
+      // whatever's entered next time a TB test is recorded.
+      if(avianType){ avianType.batch_no=avianBatch; avianType.expiry_date=avianExpiry; }
+      if(bovineType){ bovineType.batch_no=bovineBatch; bovineType.expiry_date=bovineExpiry; }
+      await persistAll();
+      for(const rec of newRecs) await syncMedicineToSupabase(rec);
+      if(avianType) await syncMedicineTypeToSupabase(avianType);
+      if(bovineType) await syncMedicineTypeToSupabase(bovineType);
+      logMsg('Logged TB test (Avian + Bovine tuberculin) for <b>'+stillValid.length+'</b> animal'+(stillValid.length===1?'':'s')+'.');
+      tbBulkAnimalIds=[];
+      view='herd';
+      render();
+      showSaveToast('Saved');
+    };
   }
   if(view==='medicineAdd'){
     wireGoKeySubmit('medadd-save');
