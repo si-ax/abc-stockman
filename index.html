@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23f';
+const APP_BUILD_VERSION = '2026-09-23g';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,13 @@ const APP_BUILD_VERSION = '2026-09-23f';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23g',
+    date: '23 Sep 2026',
+    bullets: [
+      "Fixed Insights putting every opportunity under \u201cOther\u201d when the AI fell back to its smaller model (which doesn\u2019t always use the exact category words) \u2014 category matching now understands close wording too, so Funding/Save money/Improve productivity fill in correctly."
+    ]
+  },
   {
     version: '2026-09-23f',
     date: '23 Sep 2026',
@@ -5122,6 +5129,29 @@ const OPP_STATUS={
   low_relevance:{label:'Low relevance', color:'var(--grey-light)', rank:3},
 };
 const OPP_CATEGORIES=['funding','save_money','productivity','animal_health','environment','compliance','diversification','other'];
+// Best fit for whatever category text the model actually returned. The
+// smaller fallback model (used when the strict json_schema request isn't
+// available) doesn't always send back the exact enum word (e.g. "Grant"
+// instead of "funding"), so an exact-match-only check was quietly dumping
+// almost everything into "other". Tries an exact match first, then a
+// keyword guess, in a fixed priority order so an ambiguous word (e.g.
+// "cost of poor health") lands somewhere sensible rather than the last
+// pattern that happened to match.
+function normaliseOppCategory(raw){
+  const c=String(raw||'').trim().toLowerCase();
+  if(OPP_CATEGORIES.includes(c)) return c;
+  const tests=[
+    ['funding', /fund|grant|subsid|payment scheme|capital (grant|item)/],
+    ['animal_health', /health|welfare|vet|disease|injur|\btb\b|tubercul|medicine|treatment/],
+    ['environment', /environ|biodivers|soil|water|habitat|hedge|woodland|carbon|climate|renewable|energy/],
+    ['compliance', /complian|legal|record|report|regulat|inspection/],
+    ['diversification', /divers|new (income|business|revenue)|rural business|tourism|let/],
+    ['save_money', /sav(e|ing)|cost|expense|reduc/],
+    ['productivity', /product|effic|weight|yield|growth|perform|gain/],
+  ];
+  for(const [cat,re] of tests){ if(re.test(c)) return cat; }
+  return 'other';
+}
 const OPP_GROUPS=[
   {key:'funding', label:'Funding', cats:['funding']},
   {key:'save', label:'Save money', cats:['save_money']},
@@ -5411,7 +5441,7 @@ function validateOpportunities(raw, researchUrls, webResearch){
     return {
       id:'o'+i,
       title:String(o.title).slice(0,120),
-      category:OPP_CATEGORIES.includes(o.category)?o.category:'other',
+      category:normaliseOppCategory(o.category),
       section:o.section==='other'?'other':'main',
       status:OPP_STATUS[o.status]?o.status:'needs_more_information',
       summary:noOdds(o.summary||''),
