@@ -294,7 +294,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23j';
+const APP_BUILD_VERSION = '2026-09-23k';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +302,15 @@ const APP_BUILD_VERSION = '2026-09-23j';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-23k',
+    date: '23 Sep 2026',
+    bullets: [
+      "Add Medicine: Farmer/Vet, Dosage and Method given weren\u2019t actually required to save, even though nothing on the form marked them as optional \u2014 all three are now mandatory, and so is Withdrawal date whenever it's shown (medicines with no withdrawal period, shown by the note under that field, still don't need one).",
+      "Add Animal now has the same Notes field as an animal's own details screen, so notes can be added while adding the animal rather than only afterwards.",
+      "Insights no longer suggests things Attention already covers (like weighing animals more often) \u2014 Attention is effectively its own report on that already, so Insights focuses on what neither Attention nor a plain records screen already tells you."
+    ]
+  },
   {
     version: '2026-09-23j',
     date: '23 Sep 2026',
@@ -3287,6 +3296,7 @@ function hasUnsavedNewAnimalData(){
   if(val('f-birth')) return true;
   if(val('f-birthweight')) return true;
   if(val('f-weanedweight')) return true;
+  if(val('f-notes')) return true;
   if(val('f-purchaseprice')) return true;
   if(document.querySelector('input[name="f-sex"]:checked')) return true;
   // Breed: when there's only one active breed it's pre-selected for the
@@ -5213,6 +5223,15 @@ async function reverseGeocodeFarm(){
 // A summary built for this purpose — patterns and totals rather than a line
 // per animal (keeps it small enough for Groq's free tier), and nothing
 // identifying: no CPH, tags, EIDs, animal or people names.
+function attentionCoveredTopics(){
+  const items=[];
+  herdFlags().forEach(f=>{ if(!f.muted && f.count) items.push(f.label+' ('+f.count+' animal'+(f.count===1?'':'s')+')'); });
+  const bcms=outstandingBcmsItems().length; if(bcms) items.push('BCMS birth/death reporting overdue ('+bcms+')');
+  medicineCabinetAttentionGroups().forEach(g=>{ items.push('Medicine Cabinet: '+g.label+' ('+g.count+')'); });
+  systemSettingsIssues().forEach(i=>{ items.push(i.label); });
+  syncIssues().forEach(()=>{ if(!items.includes('Some records haven\u2019t synced yet')) items.push('Some records haven\u2019t synced yet'); });
+  return items;
+}
 function buildOpportunityFarmContext(location){
   const now=new Date(), DAY=864e5;
   const yearAgo=new Date(now); yearAgo.setFullYear(yearAgo.getFullYear()-1);
@@ -5295,6 +5314,7 @@ function buildOpportunityFarmContext(location){
     const firstDates=[...weights.map(w=>w.recorded_at), ...medicineRecords.map(r=>r.administered_at)].filter(Boolean).sort();
     ctx.aBC_records_start=firstDates.length?firstDates[0].slice(0,10):null;
   }catch(e){}
+  ctx.already_shown_elsewhere_in_app = attentionCoveredTopics();
   ctx.farm_details_entered_by_farmer = farmDetails.map(d=>({ ref:d.id, type:d.category, name:d.name, details:d.details||'' }));
   if(!farmDetails.length) ctx.farm_details_entered_by_farmer_note='The farmer has not described any fields, buildings, machinery or other resources yet \u2014 land, soil, buildings, hedges etc. are all UNKNOWN.';
   return ctx;
@@ -5432,7 +5452,8 @@ RULES \u2014 follow strictly:
 - Status: strong_match = known facts appear to meet the published criteria (still subject to confirmation); potential_match = some match but key eligibility info missing; needs_more_information = could be relevant but aBC lacks the facts; low_relevance = considered but a poor fit.
 - NEVER give a percentage or numerical chance of success. NEVER say the farmer will receive funding.
 - Money: only use payment rates/amounts that appear in the research notes, and say where from. Otherwise estimated_value = null and potential_benefit describes the benefit in words (labour saved, lower costs, better sale value, reduced risk...). If you estimate, say it is an estimate and give the basis.
-- Do NOT restrict to grants. Include opportunities from the farm's own records (e.g. low weight gain in a group, repeat treatments, missing records, TB tests overdue) and from combinations of facts.
+- Do NOT restrict to grants. Include opportunities from the farm's own records (e.g. low weight gain in a group, repeat treatments, missing records) and from combinations of facts.
+- The farm data's already_shown_elsewhere_in_app list is exactly what the app's own Attention screen is already telling this farmer right now \u2014 things like animals not weighed recently, TB tests overdue, open injuries, or medicine withdrawal. Attention is effectively its own report on those already, so do NOT create an opportunity that just restates one of them (e.g. no "weigh your animals more often" when unweighed animals are already listed there). You MAY use one as supporting evidence for a genuinely different, non-obvious opportunity it points to (e.g. a funding angle, or a cost pattern behind it), but only if the opportunity itself is not that same restated to-do.
 - ${webResearch?'source_url MUST be copied exactly from the ALLOWED SOURCE URLS list, or null. source_name = organisation/page name. source_date = date shown in the notes or null.':'No research was available, so source_name, source_url and source_date MUST be null. Phrase any scheme as "check whether it is currently open".'}
 - Jurisdiction: ${where}. Never apply one UK nation's scheme to another.
 - unknown_or_missing: only information that would materially change THIS opportunity; set farm_detail_category to where the farmer could record it in aBC (field, building, machinery, other) or "none".
@@ -6924,6 +6945,10 @@ function renderAdd(){
       <div class="formrow"><label>Weaned weight</label><div class="formctrl withunit"><input type="text" inputmode="decimal" id="f-weanedweight" placeholder="Optional"><span>KG</span></div></div>
 
       <div class="formrow"><label style="color:var(--red);">Purchase</label><div class="formctrl withunit"><span>&pound;</span><input type="text" inputmode="decimal" id="f-purchaseprice" placeholder="Optional"></div></div>
+
+      <label style="margin-top:14px;">Notes <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
+      <textarea id="f-notes" maxlength="5000" style="height:38px;overflow:hidden;resize:none;" oninput="autoGrowTextarea(this);document.getElementById('addNotesCharCount').textContent=(5000-this.value.length)+' characters remaining'" placeholder="General notes about this animal"></textarea>
+      <div id="addNotesCharCount" style="font-size:13px;color:var(--grey);text-align:right;margin-top:2px;">5000 characters remaining</div>
     </div>
     ${footerBar([
       {id:'add-help', icon:'help', label:'Help'},
@@ -11525,13 +11550,14 @@ Rules:
       const birthWeight = birthWeightRaw ? parseFloat(birthWeightRaw) : null;
       const weanedWeightRaw=document.getElementById('f-weanedweight').value;
       const weanedWeight = weanedWeightRaw ? parseFloat(weanedWeightRaw) : null;
+      const notesRaw=document.getElementById('f-notes').value.trim();
       const id=uuid();
       const nextSeq = Math.max(0, ...animals.map(a=>a.created_seq||0)) + 1;
       const newAnimal = {
         id, tag_number:tag, eid:newAnimalEid, breed_id:breedId, sex, birth_date:birthDateIso, status:'active',
         purchase_price:purchasePrice, birth_weight_kg:birthWeight, weaned_weight_kg:weanedWeight,
         mother_id:newAnimalMotherId, mother_external_eid:newAnimalMotherExternalEid, father_id:newAnimalFatherId, father_external_eid:newAnimalFatherExternalEid, photo_data:newAnimalPhoto,
-        name:name||null, updated_at:new Date().toISOString(), created_seq:nextSeq, is_cross:!!newAnimalIsCross
+        name:name||null, notes:notesRaw||null, updated_at:new Date().toISOString(), created_seq:nextSeq, is_cross:!!newAnimalIsCross
       };
       // Animals are Phase 1 of the Supabase migration — once signed in and
       // linked to a farm, a new animal goes straight to the shared
@@ -13003,16 +13029,28 @@ Rules:
         expiryDateVal=cabinetMatch?cabinetMatch.expiry_date:'';
         costRaw=costFarmerDisplay.value;
       }
+      const dosageRawVal=document.getElementById('med-dosageamount').value.trim();
+      const methodVal=document.getElementById('med-method').value;
+      // Withdrawal date is mandatory whenever the row is actually asking for
+      // one — medWithdrawalRow is hidden (with medNoWithdrawalNote shown
+      // instead) only for a matched medicine with a 0-day withdrawal, which
+      // is the one case where there's genuinely nothing to enter.
+      const withdrawalApplies = medWithdrawalRow.style.display!=='none';
       const missing=[];
+      if(!farmerVetIdVal) missing.push('Farmer / Vet');
       if(!productName) missing.push('Product');
       if(!reasonVal) missing.push('Reason');
       if(isVetPath && !costRaw) missing.push('Cost/dose');
       if(isVetPath && !batchNoVal) missing.push('Batch No.');
       if(isVetPath && !expiryDateVal) missing.push('Expiry date');
+      if(!dosageRawVal) missing.push('Dosage');
+      if(!methodVal) missing.push('Method given');
+      if(withdrawalApplies && !withdrawalRaw) missing.push('Withdrawal date');
       if(missing.length){
         highlightFirstMissingField(isVetPath
-          ? [['med-productname','Product'],['med-reason','Reason'],['med-cost','Cost/dose'],['med-batchno','Batch No.'],['med-expirydate','Expiry date']]
-          : [['med-farmer-productname','Product'],['med-reason','Reason']]);
+          ? [['med-farmervet','Farmer / Vet'],['med-productname','Product'],['med-reason','Reason'],['med-cost','Cost/dose'],['med-batchno','Batch No.'],['med-expirydate','Expiry date'],['med-dosageamount','Dosage'],['med-withdrawaldate','Withdrawal date'],['med-method','Method given']]
+          : [['med-farmervet','Farmer / Vet'],['med-farmer-productname','Product'],['med-reason','Reason'],['med-dosageamount','Dosage'],['med-withdrawaldate','Withdrawal date'],['med-method','Method given']]);
+        errEl.textContent = missing.length>1 ? 'Please fill in: '+missing.join(', ')+'.' : '';
         return;
       }
       if(withdrawalRaw && withdrawalRaw < todayStr()){ errWithdrawal.textContent='Withdrawal date must be on or after today.'; return; }
@@ -13020,7 +13058,7 @@ Rules:
       if(isNaN(costVal) || costVal<0){ errCost.textContent='Enter a valid cost.'; return; }
       const a=animals.find(x=>x.id===healthTarget);
       const lw=lastWeightRecord(a.id);
-      const dosageRaw=document.getElementById('med-dosageamount').value.trim();
+      const dosageRaw=dosageRawVal;
       // A farmer administering it always comes out of the farm's own
       // cabinet — stored as 'farmer' even though the field was never shown,
       // so every record has a definite stock source for the drawdown
@@ -13049,7 +13087,7 @@ Rules:
         animal_weight_kg:lw?lw.weight_kg:null,
         dosage_amount:dosageRaw?parseFloat(dosageRaw):null,
         dosage_unit:document.getElementById('med-dosageunit').value,
-        method_given:document.getElementById('med-method').value,
+        method_given:methodVal,
         photo_data:medAddPhoto,
         administered_at:new Date().toISOString(),
         withdrawal_until: withdrawalRaw ? new Date(withdrawalRaw).toISOString() : null,
