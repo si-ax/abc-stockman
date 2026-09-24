@@ -290,11 +290,17 @@
      Currently only the `animals` table reads/writes through this; every
      other entity still lives in localStorage until its own slice lands. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<!-- jsPDF — client-side PDF generation for "Export farm summary" (Reports >
+     Insights), a plain-English farm summary a farmer can hand to any AI
+     assistant when Groq's daily limit is used up or no key is set. Same
+     CDN/pinned-version pattern as the libraries above; entirely offline
+     once cached. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-23m';
+const APP_BUILD_VERSION = '2026-09-24a';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -302,6 +308,15 @@ const APP_BUILD_VERSION = '2026-09-23m';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24a',
+    date: '24 Sep 2026',
+    bullets: [
+      "Insights: \"Tell aBC more to find more\" and each opportunity's + Add now open the right Farm details section (Machinery, Fields, Buildings) instead of always landing in Other. It no longer suggests fodder/feed-ration detail, since that's already covered by the Fodder screen. When web research can't run, the reason is now shown so we can actually see what's going wrong rather than guessing.",
+      "Farm details: the Name field is now called Title, and the confusing \"New machine\"/\"New field\" heading (shown even when you're just adding detail about something that already exists) has been removed.",
+      "Reports > Insights: new Export farm summary button makes a PDF of your farm \u2014 animals, health, costs and everything in Farm details \u2014 to hand to any AI assistant when Insights itself can't run (e.g. Groq's daily limit is used up). On completion it offers to open ChatGPT, Claude or Gemini in a new tab so you can paste it straight in."
+    ]
+  },
   {
     version: '2026-09-23m',
     date: '23 Sep 2026',
@@ -5232,6 +5247,22 @@ const OPP_CATEGORIES=['funding','save_money','productivity','animal_health','env
 // keyword guess, in a fixed priority order so an ambiguous word (e.g.
 // "cost of poor health") lands somewhere sensible rather than the last
 // pattern that happened to match.
+// Same reasoning as normaliseOppCategory just above — the smaller
+// fallback model doesn't always send back the exact enum word here either,
+// which is why every "+ Add" suggestion was landing in Other regardless
+// of what it was actually about.
+function normaliseFarmDetailCategory(raw){
+  const c=String(raw||'').trim().toLowerCase();
+  if(['field','building','machinery','other','none'].includes(c)) return c;
+  const tests=[
+    ['field', /field|land|acre|pasture|grazing|soil|paddock/],
+    ['building', /building|barn|shed|structure|housing|roof/],
+    ['machinery', /machin|tractor|equipment|vehicle|trailer|quad|crush/],
+    ['other', /./], // anything else that isn't clearly "none" still gets a place to add it, rather than being dropped
+  ];
+  for(const [cat,re] of tests){ if(re.test(c)) return cat; }
+  return 'none';
+}
 function normaliseOppCategory(raw){
   const c=String(raw||'').trim().toLowerCase();
   if(OPP_CATEGORIES.includes(c)) return c;
@@ -5456,7 +5487,7 @@ async function analyseFarmOpportunities(farmContext, opts){
 
   // Step 1: research with web search.
   progress('Searching for current schemes and opportunities\u2026 this usually takes 30\u201390 seconds');
-  let research='', researchUrls=[], webResearch=false;
+  let research='', researchUrls=[], webResearch=false, researchDiag=null;
   try{
     const researchPrompt=
 `You are an experienced UK agricultural adviser researching opportunities for ONE specific livestock farm. Today is ${farmContext.today}.
@@ -5487,6 +5518,9 @@ OUTPUT research notes, at most ~500 words \u2014 be concise, this is notes for a
     // (the model can ignore tool_choice on rare occasions) \u2014 that, not
     // just having a research paragraph, is what \u201creal web research\u201d means.
     webResearch = !!research && Array.isArray(msg.executed_tools) && msg.executed_tools.length>0;
+    if(!webResearch){
+      researchDiag = 'Groq answered (model '+r.model+') but didn\u2019t actually run a web search this time'+(research?' \u2014 it answered from its own knowledge instead.':'.');
+    }
     models.push(r.model);
   }catch(e){
     // A 401/403 here means THIS key can't use the compound/web-search
@@ -5498,6 +5532,7 @@ OUTPUT research notes, at most ~500 words \u2014 be concise, this is notes for a
     // means the key itself is the problem.
     console.warn('Opportunity research step failed, continuing without web research:', e.status, e.message);
     research=''; researchUrls=[]; webResearch=false;
+    researchDiag = 'Web search request failed: '+(e.status?'('+e.status+') ':'')+(e.message||String(e));
   }
 
   // Step 2: structure into opportunity cards.
@@ -5518,7 +5553,7 @@ RULES \u2014 follow strictly:
 - unknown_or_missing: only information that would materially change THIS opportunity; set farm_detail_category to where the farmer could record it in aBC (field, building, machinery, other) or "none".
 - actions: 1\u20134 short, concrete next steps.
 - Quality over quantity, and BE CONCISE in every field (this saves your daily quota): at most 6 with section "main" (most relevant, valuable, actionable, current first), up to 2 less-obvious ones with section "other", and up to 2 low_relevance. Keep summary/potential_benefit to one sentence each, and why_relevant/known_farm_evidence/actions to short phrases, not sentences.
-- data_gaps: up to 5 pieces of farm information that would most improve future analysis (e.g. total land area, tenancy, soil types) \u2014 only if genuinely missing from the farm data.
+- data_gaps: up to 5 pieces of farm information that would most improve future analysis (e.g. total land area, tenancy, soil types) \u2014 only if genuinely missing from the farm data. Never suggest feed rations, feed intake, or anything about fodder \u2014 that's already covered by the app's own Fodder records and out of scope here.
 - headline: one friendly sentence summarising what you found.
 - Plain UK English a farmer would use. Short sentences.
 
@@ -5537,7 +5572,7 @@ ${webResearch?'RESEARCH NOTES:\n'+research+'\n\nALLOWED SOURCE URLS:\n'+research
   if(!text) throw new Error('Groq returned no results');
   let raw;
   try{ raw=parseAiJson(text); }catch(e){ throw new Error('Groq\u2019s answer couldn\u2019t be read as data'); }
-  return { result:validateOpportunities(raw, researchUrls, webResearch), webResearch, models, researchUrls };
+  return { result:validateOpportunities(raw, researchUrls, webResearch), webResearch, models, researchUrls, researchDiag };
 }
 
 // ---- Plain-code checks on whatever the model returned ----
@@ -5565,7 +5600,7 @@ function validateOpportunities(raw, researchUrls, webResearch){
       known_farm_evidence:arr(o.known_farm_evidence),
       inferred:arr(o.inferred).map(noOdds),
       unknown_or_missing:(Array.isArray(o.unknown_or_missing)?o.unknown_or_missing:[]).map(u=>typeof u==='string'?{item:u, farm_detail_category:'none'}:u)
-        .filter(u=>u && u.item).map(u=>({item:String(u.item), farm_detail_category:cats.includes(u.farm_detail_category)?u.farm_detail_category:'none'})),
+        .filter(u=>u && u.item).map(u=>({item:String(u.item), farm_detail_category:normaliseFarmDetailCategory(u.farm_detail_category)})),
       potential_benefit:noOdds(o.potential_benefit||''),
       estimated_value:(o.estimated_value && String(o.estimated_value).trim())||null,
       estimated_value_basis:(o.estimated_value_basis && String(o.estimated_value_basis).trim())||null,
@@ -5583,7 +5618,7 @@ function validateOpportunities(raw, researchUrls, webResearch){
   const main=opps.filter(o=>o.status!=='low_relevance' && o.section==='main').sort(byRank).slice(0,6);
   const other=opps.filter(o=>o.status!=='low_relevance' && o.section==='other').sort(byRank).slice(0,2);
   const gaps=(Array.isArray(raw && raw.data_gaps)?raw.data_gaps:[]).map(g=>typeof g==='string'?{item:g, why:'', farm_detail_category:'other'}:g)
-    .filter(g=>g && g.item).slice(0,5).map(g=>({item:String(g.item), why:String(g.why||''), farm_detail_category:cats.includes(g.farm_detail_category)?g.farm_detail_category:'none'}));
+    .filter(g=>g && g.item).slice(0,5).map(g=>({item:String(g.item), why:String(g.why||''), farm_detail_category:normaliseFarmDetailCategory(g.farm_detail_category)}));
   return { headline:noOdds(String(raw && raw.headline || '')), opportunities:[...main, ...other, ...low], data_gaps:gaps };
 }
 
@@ -5613,12 +5648,12 @@ async function runFarmOpportunities(){
     const res=await analyseFarmOpportunities(ctx, {onProgress:setOppProgress});
     const rec={ id:uuid(), created_at:new Date().toISOString(),
       created_by_name:(currentFarmerName&&currentFarmerName!=='Admin')?currentFarmerName:((authUser&&authUser.email)||currentFarmerName||'Admin'),
-      web_research:res.webResearch, models:res.models.join(' + '), location, result:res.result };
+      web_research:res.webResearch, research_diag:res.researchDiag||null, models:res.models.join(' + '), location, result:res.result };
     farmOpportunitiesLatest=rec;
     await persistAll();
     if(authFarmId) await queuedSync('farm_opportunities:'+rec.id, {table:'farm_opportunities', method:'insert', label:'farm opportunities', payload:{
       id:rec.id, farm_id:authFarmId, created_at:rec.created_at, created_by_name:rec.created_by_name,
-      web_research:rec.web_research, models:rec.models, location:rec.location, result:rec.result }});
+      web_research:rec.web_research, research_diag:rec.research_diag, models:rec.models, location:rec.location, result:rec.result }});
     logMsg('Farm opportunities checked \u2014 '+rec.result.opportunities.filter(o=>o.status!=='low_relevance').length+' found'+(rec.web_research?'':' (no web research)')+'.');
   }catch(e){
     oppError=oppFriendlyError(e);
@@ -5633,6 +5668,115 @@ setInterval(()=>{
   const el=document.getElementById('oppElapsed');
   if(el) el.textContent=Math.round((Date.now()-oppStartedAt)/1000)+'s';
 }, 1000);
+
+// ---------- Export farm summary (PDF) ----------
+// A plain-English PDF of the farm — for handing to any AI assistant when
+// Insights itself can't run (Groq's daily limit used up, or no key set at
+// all). Reuses the exact same farm summary Insights builds, just laid out
+// as readable prose instead of JSON — same numbers either way. Entirely
+// client-side (jsPDF), so it works with no Groq key and no web research.
+let pdfExporting=false;
+function pdfAddHeading(doc, y, text){
+  if(y>270){ doc.addPage(); y=18; }
+  doc.setFont(undefined,'bold'); doc.setFontSize(12); doc.setTextColor(30,90,50);
+  doc.text(text, 14, y);
+  doc.setTextColor(20,20,20);
+  return y+7;
+}
+function pdfAddLines(doc, y, lines, opts){
+  opts=opts||{};
+  doc.setFont(undefined, opts.bold?'bold':'normal'); doc.setFontSize(opts.size||10);
+  const wrapped=doc.splitTextToSize((lines||[]).join('\n')||'\u2014', 182);
+  wrapped.forEach(line=>{
+    if(y>280){ doc.addPage(); y=18; }
+    doc.text(line, 14, y);
+    y+=5;
+  });
+  return y+2;
+}
+async function buildFarmSummaryPdfBlob(){
+  const { jsPDF }=window.jspdf;
+  const doc=new jsPDF();
+  let location=null;
+  try{ location=await reverseGeocodeFarm(); }catch(e){}
+  const ctx=buildOpportunityFarmContext(location);
+  let y=18;
+  doc.setFont(undefined,'bold'); doc.setFontSize(16); doc.setTextColor(30,90,50);
+  doc.text('aBC Stockman \u2014 Farm Summary', 14, y); y+=8;
+  doc.setTextColor(20,20,20); doc.setFont(undefined,'normal'); doc.setFontSize(10);
+  const locText = location && location.country ? [location.local_authority, location.county, location.country].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(', ') : (location && location.description) || 'Location not recorded';
+  doc.text('Generated '+fmtDateTimeShort(new Date().toISOString())+'  \u2014  '+locText, 14, y); y+=10;
+
+  doc.setFillColor(240,247,242); doc.rect(14,y-4,182,20,'F');
+  y=pdfAddLines(doc, y, ['Suggested prompt for whichever AI assistant you paste this into:',
+    '\u201cHere is a summary of my UK livestock farm. What funding, savings or improvements might be worth looking into?\u201d'], {size:9});
+  y+=4;
+
+  y=pdfAddHeading(doc, y, 'Livestock ('+ctx.livestock.active_animals+' active animals)');
+  if(ctx.livestock.groups && ctx.livestock.groups.length){
+    ctx.livestock.groups.forEach(g=>{
+      y=pdfAddLines(doc, y, [g.breed+' ('+g.species+'): '+g.count+' animals, '+g.female+' female / '+g.male+' male.'+
+        ' Ages: '+g.age_under_12m+' under 12mo, '+g.age_12_to_24m+' 12\u201324mo, '+g.age_over_24m+' over 24mo.'+
+        (g.avg_latest_weight_kg!=null?' Avg latest weight '+g.avg_latest_weight_kg+'kg ('+g.animals_with_a_weight+' weighed).':' No weights recorded.')+
+        (g.avg_bcs_1to5!=null?' Avg BCS '+g.avg_bcs_1to5+'.':'')+
+        (g.avg_daily_gain_kg_last_180d!=null?' Avg daily gain (180d) '+g.avg_daily_gain_kg_last_180d+'kg.':'')]);
+    });
+  } else y=pdfAddLines(doc, y, ['No livestock recorded.']);
+  y=pdfAddLines(doc, y, ['Never weighed: '+ctx.livestock.active_animals_never_weighed+'. Not weighed in 60+ days: '+ctx.livestock.active_animals_not_weighed_in_60_days+'.']);
+
+  y=pdfAddHeading(doc, y, 'Animal health (last 12 months)');
+  const h=ctx.animal_health_last_12_months;
+  y=pdfAddLines(doc, y, [
+    'Treatments: '+h.treatments+', total cost \u00a3'+h.treatment_cost_gbp+' (of which \u00a3'+h.of_which_given_by_vet_gbp+' by vet).',
+    'By reason: '+Object.entries(h.treatments_by_reason||{}).map(([k,v])=>k+': '+v).join(', ')||'none recorded',
+    'Animals treated 3+ times: '+h.animals_treated_3_or_more_times+'. Open injuries: '+h.animals_with_open_injury+'. Injuries recorded: '+h.injuries_recorded+'.',
+    'TB testing interval: every '+h.tb_testing_interval_months+' months. Currently overdue: '+h.active_animals_tb_test_overdue+'. In medicine withdrawal: '+h.active_animals_in_medicine_withdrawal+'.',
+  ]);
+
+  y=pdfAddHeading(doc, y, 'Sales, losses and costs (last 12 months)');
+  const s=ctx.sales_and_losses_last_12_months||{}, c=ctx.costs_last_12_months||{};
+  y=pdfAddLines(doc, y, [
+    'Animals leaving the farm: '+Object.entries(s.animals_leaving_by_reason||{}).map(([k,v])=>k+': '+v).join(', ')||'none',
+    'Realised profit/loss: \u00a3'+(s.realised_profit_loss_gbp!=null?s.realised_profit_loss_gbp:'\u2014'),
+    'Fodder cost: \u00a3'+(c.fodder_gbp!=null?c.fodder_gbp:'\u2014')+(c.fodder_types&&c.fodder_types.length?' ('+c.fodder_types.join(', ')+')':''),
+  ]);
+
+  y=pdfAddHeading(doc, y, 'Farm details (fields, buildings, machinery, other)');
+  if(farmDetails.length){
+    FARM_DETAIL_CATEGORIES.forEach(cat=>{
+      const items=farmDetails.filter(d=>d.category===cat);
+      if(!items.length) return;
+      y=pdfAddLines(doc, y, [FARM_DETAIL_TYPES[cat].label+':'], {bold:true});
+      items.forEach(d=>{ y=pdfAddLines(doc, y, ['\u2022 '+d.name+(d.details?' \u2014 '+d.details:' (no further detail added)')]); });
+    });
+  } else {
+    y=pdfAddLines(doc, y, ['Nothing added yet \u2014 see Settings > Farm details in the app.']);
+  }
+
+  y=pdfAddHeading(doc, y, ' ');
+  y=pdfAddLines(doc, y, ['Generated by aBC Stockman. This is a factual summary of the farm\u2019s own records \u2014 it does not include any funding or eligibility assessment.'], {size:8});
+  return doc;
+}
+async function runExportFarmSummary(){
+  if(pdfExporting) return;
+  if(!(window.jspdf && window.jspdf.jsPDF)){
+    showInfoModal('This needs an internet connection the first time it\u2019s used (to load the PDF tool) \u2014 try again once you have signal.');
+    return;
+  }
+  pdfExporting=true; render();
+  try{
+    const doc=await buildFarmSummaryPdfBlob();
+    const fname='aBC-Stockman-Farm-Summary-'+todayStr()+'.pdf';
+    doc.save(fname);
+    logMsg('Exported farm summary PDF.');
+    pdfExporting=false;
+    modal={type:'pdfExportDone'};
+    render();
+  }catch(e){
+    pdfExporting=false; render();
+    showInfoModal('Couldn\u2019t create the PDF: '+((e&&e.message)||String(e)));
+  }
+}
 
 function renderOpportunitiesBody(){
   const aiReady=farmSettings.use_ai===true && !!farmSettings.groq_api_key;
@@ -5666,7 +5810,7 @@ function renderOpportunitiesBody(){
     <div style="font-size:20px;font-weight:800;color:var(--ink);margin:4px 0 4px;">${shown.length?`We\u2019ve found ${shown.length} thing${shown.length===1?'':'s'} worth looking at.`:'Nothing strong found this time.'}</div>
     ${r.headline?`<div style="font-size:14.5px;color:var(--ink);margin-bottom:6px;">${escapeHtml(r.headline)}</div>`:''}
     <div style="font-size:12px;color:var(--grey);margin-bottom:10px;">Checked ${escapeHtml(fmtDateTimeShort(o.created_at))}${o.created_by_name?' by '+escapeHtml(o.created_by_name):''} \u00b7 ${escapeHtml(locText)}</div>
-    ${o.web_research?'':`<div class="warnbanner" style="display:block;font-size:13px;">Groq couldn\u2019t search the web on this run, so these are based on the AI\u2019s general knowledge only \u2014 schemes may have changed or closed. Try Analyse again later.</div>`}
+    ${o.web_research?'':`<div class="warnbanner" style="display:block;font-size:13px;">Groq couldn\u2019t search the web on this run, so these are based on the AI\u2019s general knowledge only \u2014 schemes may have changed or closed. Try Analyse again later.${o.research_diag?`<div style="margin-top:6px;font-size:11.5px;opacity:.8;font-family:monospace;">${escapeHtml(o.research_diag)}</div>`:''}</div>`}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 14px;">
       ${OPP_GROUPS.map(g=>{
         const n=shown.filter(x=>oppGroupKey(x)===g.key).length;
@@ -5992,6 +6136,7 @@ function renderReportDetail(){
     ] : type==='insights' ? [
       {id:'reportdetail-help', icon:'help', label:'Help'},
       ...((farmSettings.use_ai===true && farmSettings.groq_api_key && !oppRunning) ? [{id:'reportdetail-oppsrun', icon:'lightbulb', label:farmOpportunitiesLatest?'Re-check':'Analyse', primary:true}] : []),
+      {id:'reportdetail-exportpdf', label:pdfExporting?'Exporting\u2026':'Export farm summary', disabled:pdfExporting},
       {id:'reportdetail-home', icon:'home', label:'Home', home:true},
     ] : [{id:'reportdetail-help', icon:'help', label:'Help'}, {id:'reportdetail-home', icon:'home', label:'Home', home:true}])}`;
 }
@@ -8258,8 +8403,7 @@ function renderSettings(){
         const remaining=FARM_DETAIL_MAX_CHARS-(e.details||'').length;
         return `
         <div style="margin-top:4px;">
-          <div style="font-size:14px;font-weight:800;color:var(--ink);margin-bottom:4px;">${existing?'Edit '+def.singular:'New '+def.singular}</div>
-          <label>Name</label>
+          <label>Title</label>
           <input type="text" id="fdName" maxlength="80" placeholder="${escapeHtml(def.namePlaceholder)}" value="${escapeHtml(e.name||'')}">
           <div class="field-error" id="err-fdname"></div>
           <label>Details <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional \u2014 add what you know now, build it up over time)</span></label>
@@ -9213,6 +9357,18 @@ function renderModal(){
       <button class="fullbtn" id="modalCancel">OK</button>
     </div>`;
   }
+  if(modal.type==='pdfExportDone'){
+    const sites=[
+      {id:'chatgpt', label:'ChatGPT', url:'https://chatgpt.com/'},
+      {id:'claude', label:'Claude', url:'https://claude.ai/new'},
+      {id:'gemini', label:'Gemini', url:'https://gemini.google.com/app'},
+    ];
+    div.innerHTML=`<div class="modal">
+      <div style="font-size:15px;color:var(--ink);line-height:1.5;margin-bottom:14px;">Upload this summary to any AI site for more insights. These are the most common:</div>
+      ${sites.map(s=>`<button class="fullbtn" data-pdfopensite="${s.url}" style="margin-top:8px;">${s.label}</button>`).join('')}
+      <button class="fullbtn" id="modalCancel" style="background:none;border:1px solid var(--line);color:var(--ink);margin-top:14px;">Close</button>
+    </div>`;
+  }
   if(modal.type==='confirmYesNo'){
     div.innerHTML=`<div class="modal">
       <div style="font-size:15px;color:var(--ink);line-height:1.5;white-space:pre-line;">${escapeHtml(modal.text)}</div>
@@ -9754,6 +9910,10 @@ function renderModal(){
       }
       closeModalOnly();
     };
+  }
+  if(modal.type==='pdfExportDone'){
+    document.getElementById('modalCancel').onclick=()=>closeModalOnly();
+    document.querySelectorAll('[data-pdfopensite]').forEach(el=>el.onclick=()=>{ window.open(el.dataset.pdfopensite, '_blank'); });
   }
   if(modal.type==='confirmYesNo'){
     const onYes=modal.onYes, onNo=modal.onNo;
@@ -11206,6 +11366,8 @@ function wireView(){
     if(sellKeepSellEl) sellKeepSellEl.onchange=()=>sellKeepSwitch('sellyes');
     if(sellKeepKeepEl) sellKeepKeepEl.onchange=()=>sellKeepSwitch('sellno');
     if(reportType==='insights'){
+      const exportBtn=document.getElementById('reportdetail-exportpdf');
+      if(exportBtn) exportBtn.onclick=()=>runExportFarmSummary();
       const runBtn=document.getElementById('reportdetail-oppsrun');
       if(runBtn) runBtn.onclick=()=>{ runFarmOpportunities(); };
       document.querySelectorAll('[data-oppjump]').forEach(el=>el.onclick=()=>{ const t=document.getElementById('oppgroup-'+el.dataset.oppjump); if(t) t.scrollIntoView({block:'start', behavior:'smooth'}); });
