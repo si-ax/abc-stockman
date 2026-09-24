@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24l';
+const APP_BUILD_VERSION = '2026-09-24m';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-24l';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24m',
+    date: '24 Sep 2026',
+    bullets: [
+      "Fixed a real catch-22: signing in by email and then being sent straight back to the Farm ID/Passcode screen. An email sign-in already proves who you are \u2014 a passcode exists to prove the same thing for a device with no email session at all, so it should never have been asked for again on top of a real email login. Email sign-in now goes straight in.",
+    ]
+  },
   {
     version: '2026-09-24l',
     date: '24 Sep 2026',
@@ -1070,6 +1077,25 @@ let authError = null;      // last auth-related error message, if any
 // matters while pcMode is true.
 let knownFarmCodes=[]; // [{code, name}], most recent first, this device only // {name, code} for authFarmId, fetched once per farm
 let pcMode=false, pcFarmCode='', pcFarmName='', pcFarmerOptions=null, pcFarmerId='', pcPasscode='', pcLoading=false, pcError=null;
+// Called once authFarmId is known but this device hasn't been paired yet
+// (no deviceFarmCode saved locally). Two genuinely different situations
+// were being treated the same, which is what caused the catch-22: a real
+// email sign-in already proves identity at the account level — asking for
+// a Farm ID and passcode on top of that achieves nothing and just sends
+// the person back to the form they'd already gotten past. The passcode
+// exists for the OTHER case: an anonymous, no-email device session, where
+// nothing else has proven who's using it yet — that's the one situation
+// where asking for it is actually doing something.
+async function completeDevicePairing(){
+  if(authUser && authUser.email){
+    const { data } = await sb.from('farms').select('name,code').eq('id', authFarmId).single();
+    deviceFarmCode=(data&&data.code)||authFarmId; deviceFarmName=(data&&data.name)||'';
+    await persistAll();
+    goHomeRespectingBootMinimum();
+  } else {
+    enterPasscodeLogin(); render();
+  }
+}
 function enterPasscodeLogin(){
   view='supaLogin'; pcMode=true; pcError=null; pcFarmerOptions=null; pcFarmerId=''; pcPasscode=''; pcLoading=false;
   if(!pcFarmCode.trim() && knownFarmCodes.length) pcFarmCode=knownFarmCodes[0].code;
@@ -13885,7 +13911,7 @@ Rules:
       // right after that failure raced this and lost; this doesn't).
       if(PRE_APP_VIEWS.has(view) && !pcMode){
         if(authFarmId && deviceFarmCode) goHomeRespectingBootMinimum();
-        else if(authFarmId){ enterPasscodeLogin(); render(); }
+        else if(authFarmId){ await completeDevicePairing(); }
         else { view='supaWaiting'; render(); }
       }
       // else: already in normal use — just keep authUser/authFarmId
@@ -13901,7 +13927,7 @@ Rules:
 
   if(!authUser){ view='supaLogin'; render(); }
   else if(!authFarmId){ view='supaWaiting'; render(); }
-  else if(!deviceFarmCode){ enterPasscodeLogin(); render(); }
+  else if(!deviceFarmCode){ await completeDevicePairing(); }
   else { goHomeRespectingBootMinimum(); }
   if(isOnline) runPendingAnalyses();
   if(isOnline) flushSyncQueue();
