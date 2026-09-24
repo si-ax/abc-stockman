@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24b';
+const APP_BUILD_VERSION = '2026-09-24c';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-24b';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24c',
+    date: '24 Sep 2026',
+    bullets: [
+      "Fixed the real cause of \"couldn\u2019t search the web\": the web-search step was sending your ENTIRE farm record as part of its prompt, which Groq started rejecting as too long the moment there was enough in Farm details to push it over the limit. It now sends a short brief instead (species, location, a summary of what's in Farm details) \u2014 everything it actually needs to search well, at a fraction of the size. The full farm detail still goes to the second step, which is what actually matches opportunities to your farm."
+    ]
+  },
   {
     version: '2026-09-24b',
     date: '24 Sep 2026',
@@ -5487,10 +5494,30 @@ const OPP_SCHEMA={
 // ---- The engine ----
 // farmContext: from buildOpportunityFarmContext(). opts.onProgress(text).
 // Resolves {result, webResearch, models, researchUrls}.
+// A short brief for the RESEARCH step only — species, location and a
+// summary of Farm details — enough to search well without embedding the
+// whole farm record. The full farmContext is still what the STRUCTURING
+// step (below) matches opportunities against; this is just what guides the
+// web search itself. Sending the full JSON here is what caused Groq to
+// reject the request outright once a real farm had enough recorded
+// ("Please reduce the length of the messages or completion").
+function buildResearchBrief(farmContext){
+  const lv=farmContext.livestock||{};
+  const species=[...new Set((lv.groups||[]).map(g=>g.species).filter(Boolean))];
+  const details=(farmContext.farm_details_entered_by_farmer||[]).map(d=>
+    '- ('+d.type+') '+d.name+(d.details?': '+d.details.slice(0,180):' \u2014 no further detail'));
+  return [
+    'Species kept: '+(species.join(', ')||'not recorded'),
+    'Active animals: '+(lv.active_animals!=null?lv.active_animals:'not recorded'),
+    'Farm details on record ('+details.length+' entries):',
+    details.length?details.slice(0,20).join('\n'):'(nothing recorded yet in Farm details)',
+  ].join('\n');
+}
 async function analyseFarmOpportunities(farmContext, opts){
   opts=opts||{};
   const progress=t=>{ if(opts.onProgress) opts.onProgress(t); };
   const ctxJson=JSON.stringify(farmContext);
+  const researchBrief=buildResearchBrief(farmContext);
   const where=farmContext.location && (farmContext.location.country || farmContext.location.description) || 'unknown (no location recorded)';
   const models=[];
 
@@ -5502,8 +5529,8 @@ async function analyseFarmOpportunities(farmContext, opts){
 `You are an experienced UK agricultural adviser researching opportunities for ONE specific livestock farm. Today is ${farmContext.today}.
 Farm jurisdiction: ${where}. Do NOT assume schemes from one UK nation apply in another (England, Scotland, Wales and Northern Ireland differ). Do not invent geographic eligibility.
 
-FARM DATA (the farmer's own records; anything not listed is unknown):
-${ctxJson}
+FARM SUMMARY (brief \u2014 the full records are used in the next step, this is just to guide your searches):
+${researchBrief}
 
 TASK: Use web search to find CURRENT opportunities (open now, or opening/likely within the next 12 months) relevant to THIS farm. Search broadly \u2014 not just grants: national schemes and payments for land management, environment, capital items, productivity, animal health and welfare; local/regional, county, National Park, protected-landscape, catchment and water-company schemes; energy and renewables; plus practical cost-saving or productivity angles suggested by the farm's own figures. Look for opportunities created by COMBINATIONS of farm facts. Prefer official sources (gov.uk, defra, rural payments agencies, gov.scot, ruralpayments.org, gov.wales, daera-ni.gov.uk, local councils, national parks, official funding bodies); commercial sites only for discovery.
 Never put personal identifiers in search queries.
