@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24g';
+const APP_BUILD_VERSION = '2026-09-24i';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,21 @@ const APP_BUILD_VERSION = '2026-09-24g';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24i',
+    date: '24 Sep 2026',
+    bullets: [
+      "Fixed the real problem behind \"can't log in with WATERSWALLOWS1234\": the screen you were on wasn't the new passcode sign-in at all \u2014 it was an old leftover local device screen that (a) capped the Farm ID at 10 characters and (b) only ever checked it against a fixed demo value, never the real one, so it could never have worked no matter the length. It's fixed properly now: since that screen only ever appears once you're already signed in to a real farm, it no longer asks for the Farm ID at all \u2014 just your passcode (and who you are, if more than one of you) \u2014 checked for real against the farm you're already on.",
+    ]
+  },
+  {
+    version: '2026-09-24h',
+    date: '24 Sep 2026',
+    bullets: [
+      "Settings > Use AI: removed the explanation under the license key field.",
+      "Settings > Farm details: opening a record to edit it, and saving one (new or existing), now brings its section to the top of the screen the same way opening Farm details or a category already did \u2014 previously only those two levels did this, so the record itself could end up out of view."
+    ]
+  },
   {
     version: '2026-09-24g',
     date: '24 Sep 2026',
@@ -1029,6 +1044,7 @@ let authError = null;      // last auth-related error message, if any
 // Farm ID + passcode login (the supaLogin screen's alternative to emailing
 // a magic link) — pcMode toggles which form is showing; the rest only
 // matters while pcMode is true.
+let loginKnownFarm=null, loginKnownFarmFor=null; // {name, code} for authFarmId, fetched once per farm
 let pcMode=false, pcFarmCode='', pcFarmName='', pcFarmerOptions=null, pcFarmerId='', pcPasscode='', pcLoading=false, pcError=null;
 // (No separate "logging in" flag: the guard below uses pcMode itself,
 // since a flag reset immediately after a failed attempt can lose a race
@@ -4170,7 +4186,6 @@ function updateSignalBadge(){
   btn.title = (isOnline ? 'Signal OK' : 'No signal \u2014 changes are stored locally and synced when signal returns') + (pending ? ' \u2014 '+pending+' change'+(pending===1?'':'s')+' waiting to sync' : '');
 }
 
-const DEMO_FARM_CODE='DEV0001', DEMO_PASSCODE='00000000'; // no real Farm ID/Passcode data model exists yet — these are just pre-filled demo values, not validated against anything real
 function renderPasscodeLoginForm(){
   const showOptions = pcFarmerOptions && pcFarmerOptions.length>0;
   const showNoOptions = pcFarmerOptions && pcFarmerOptions.length===0;
@@ -4246,8 +4261,15 @@ function renderSupaWaiting(){
     </div>`;
 }
 function renderLogin(){
-  const activeFarmers = farmersVets.filter(p=>p.role==='farmer' && p.active);
-  const loginBtnLabel = activeFarmers.length===1 ? escapeHtml(activeFarmers[0].name) : 'Login';
+  // This screen only ever appears once authUser AND authFarmId are already
+  // real (see the boot sequence) — the one exception is a single optimistic
+  // instant paint before auth has resolved at all, shown as a brief loading
+  // state rather than a form with nothing real to validate against yet.
+  if(!authFarmId){
+    return `<div class="body" style="display:flex;align-items:center;justify-content:center;min-height:100%;color:var(--grey);">Loading\u2026</div>`;
+  }
+  const activeFarmers = farmersVets.filter(p=>p.role==='farmer' && p.active && p.passcode_hash);
+  const loginBtnLabel = activeFarmers.length===1 ? escapeHtml(activeFarmers[0].name) : 'Log in';
 
   return `
     <div class="body" style="display:flex;flex-direction:column;padding:0;">
@@ -4260,23 +4282,24 @@ function renderLogin(){
           ${LOGIN_BULLETS.map(b=>`<div style="font-size:14px;margin-bottom:8px;">&bull; ${b}</div>`).join('')}
         </div>
         <div style="padding:7px 22px;">
-          <label>Farm ID</label>
-          <input type="text" id="loginFarmCode" value="${DEMO_FARM_CODE}" style="text-transform:uppercase;font-size:16px;" maxlength="10">
-          <label style="margin-top:12px;">Passcode</label>
-          <input type="text" inputmode="numeric" id="loginPasscode" value="${DEMO_PASSCODE}" maxlength="8" style="font-size:16px;">
+          ${loginKnownFarm?`<div style="font-size:13px;color:var(--grey);margin-bottom:12px;">Farm: <b style="color:var(--ink);">${escapeHtml(loginKnownFarm.name)}</b></div>`:''}
           ${activeFarmers.length>1?`
-            <label style="margin-top:12px;">User</label>
+            <label>Who are you?</label>
             <select id="loginFarmerPick">
               <option value="">\u2014 Select \u2014</option>
               ${activeFarmers.map(f=>`<option value="${f.id}">${escapeHtml(f.name)}</option>`).join('')}
             </select>
           `:''}
-          ${loginError?`<div class="field-error" style="margin-top:8px;">${loginError}</div>`:''}
+          ${activeFarmers.length?`
+          <label style="margin-top:12px;">Passcode</label>
+          <input type="text" inputmode="numeric" id="loginPasscode" maxlength="8" style="font-size:16px;">
+          `:`<div style="font-size:14px;color:var(--grey);">No passcode sign-in is set up for anyone on this farm yet \u2014 ask whoever manages it to set one in Settings.</div>`}
+          ${loginError?`<div class="field-error" style="margin-top:8px;">${escapeHtml(loginError)}</div>`:''}
         </div>
         <div style="flex:1;"></div>
         <div style="display:flex;gap:10px;padding:8px 22px 22px;">
           <button id="loginWalkthroughBtn" class="fullbtn" style="flex:1;margin-top:0;display:flex;align-items:center;justify-content:center;gap:8px;"><span style="width:20px;height:20px;flex-shrink:0;">${icon('walking')}</span>Walkthrough</button>
-          <button id="loginFinish" class="fullbtn" style="flex:1;margin-top:0;">${loginBtnLabel}</button>
+          ${activeFarmers.length?`<button id="loginFinish" class="fullbtn" style="flex:1;margin-top:0;">${loginBtnLabel}</button>`:''}
         </div>
       </div>
     </div>`;
@@ -8596,7 +8619,6 @@ function renderSettings(){
           <div style="border-top:1px solid var(--line);margin:14px 0 0;padding-top:14px;">
             <label style="margin-top:0;">License key</label>
             <input type="text" id="groqApiKey" placeholder="Paste your key here" value="${farmSettings.groq_api_key?escapeHtml(farmSettings.groq_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
-            <div style="font-size:13px;color:var(--grey);margin-top:8px;">One key for the whole farm \u2014 whoever enters it here, everyone signed in to this farm uses it (and shares its daily usage allowance, so is worth keeping an eye on with several people scanning).</div>
           </div>`:''}
         </div>`:''}
       </div>
@@ -11416,38 +11438,45 @@ function wireView(){
       view='supaLogin'; render();
     };
   }
-  if(view==='login'){
-    const activeFarmers = farmersVets.filter(p=>p.role==='farmer' && p.active);
+  if(view==='login' && authFarmId){
     document.getElementById('loginWalkthroughBtn').onclick=()=>{ walkthroughReturnView='login'; walkthroughStep=1; view='walkthrough'; render(); };
-    wireGoKeySubmit('loginFinish', 'body');
-    document.getElementById('loginFinish').onclick=async()=>{
-      const codeRaw=document.getElementById('loginFarmCode').value.trim().toUpperCase();
-      const passRaw=document.getElementById('loginPasscode').value.trim();
-      loginError='';
-      // NOTE: this prototype has no reachable live server to verify against
-      // (it's a self-contained offline-first demo, same as the rest of the
-      // app) and no real Farm ID/Passcode data model yet either — these
-      // fields are pre-filled with fixed demo values and checked against
-      // that same fixed pair, purely so the screen has something to
-      // validate. A real deployment would call POST /auth/login on the API
-      // built in server.js against real per-farm credentials.
-      if(codeRaw!==DEMO_FARM_CODE || passRaw!==DEMO_PASSCODE){ loginError='Invalid Farm ID or Passcode.'; render(); return; }
-      deviceFarmCode=codeRaw; deviceFarmName='Herriots';
-      if(activeFarmers.length>1){
-        const pick=document.getElementById('loginFarmerPick').value;
-        if(!pick){ loginError='Select who\u2019s using the app.'; render(); return; }
-        const f=activeFarmers.find(x=>x.id===pick);
-        currentFarmerId=f.id; currentFarmerName=f.name;
-      } else if(activeFarmers.length===1){
-        currentFarmerId=activeFarmers[0].id; currentFarmerName=activeFarmers[0].name;
-      } else {
-        currentFarmerId=null; currentFarmerName='Admin';
+    {
+      if(loginKnownFarmFor!==authFarmId){
+        loginKnownFarmFor=authFarmId;
+        sb.from('farms').select('name,code').eq('id', authFarmId).single().then(({data})=>{
+          if(data){ loginKnownFarm={name:data.name, code:data.code}; if(view==='login') render(); }
+        });
       }
-      await persistAll();
-      suppressHistoryPush=true;
-      view='home';
-      render();
-    };
+      const activeFarmers = farmersVets.filter(p=>p.role==='farmer' && p.active && p.passcode_hash);
+      if(activeFarmers.length){
+        wireGoKeySubmit('loginFinish', 'body');
+        document.getElementById('loginFinish').onclick=async()=>{
+          loginError='';
+          let farmerId;
+          if(activeFarmers.length>1){
+            const pick=document.getElementById('loginFarmerPick').value;
+            if(!pick){ loginError='Select who\u2019s using the app.'; render(); return; }
+            farmerId=pick;
+          } else {
+            farmerId=activeFarmers[0].id;
+          }
+          const passRaw=document.getElementById('loginPasscode').value.trim();
+          if(!passRaw){ loginError='Enter your passcode.'; render(); return; }
+          const btn=document.getElementById('loginFinish'); const originalLabel=btn.textContent;
+          btn.disabled=true; btn.textContent='Checking\u2026';
+          const { error } = await sb.rpc('verify_my_farm_passcode', {p_farmer_id:farmerId, p_passcode:passRaw});
+          if(error){ loginError='Incorrect user or passcode.'; btn.disabled=false; btn.textContent=originalLabel; render(); return; }
+          const f=activeFarmers.find(x=>x.id===farmerId);
+          deviceFarmCode=(loginKnownFarm&&loginKnownFarm.code)||'PAIRED';
+          deviceFarmName=(loginKnownFarm&&loginKnownFarm.name)||'';
+          currentFarmerId=f.id; currentFarmerName=f.name;
+          await persistAll();
+          suppressHistoryPush=true;
+          view='home';
+          render();
+        };
+      }
+    }
   }
   if(view==='locked'){
     wireGoKeySubmit('lockoutUnlockBtn', 'body');
@@ -12316,13 +12345,14 @@ Rules:
       if(!d) return;
       farmDetailEdit={id:d.id, category:d.category, name:d.name, details:d.details||''};
       render();
-      const t=document.getElementById('fdName'); if(t) t.scrollIntoView({block:'center', behavior:'smooth'});
+      const cat=document.querySelector('[data-toggle-fdcat="'+d.category+'"]'); if(cat) cat.scrollIntoView({block:'start', behavior:'smooth'});
     });
     const fdAddBtn=document.getElementById('settings-farmdetail-add');
     if(fdAddBtn) fdAddBtn.onclick=()=>{
       farmDetailEdit={id:null, category:farmDetailsOpenCat, name:'', details:''};
       render();
-      const t=document.getElementById('fdName'); if(t){ t.scrollIntoView({block:'center', behavior:'smooth'}); t.focus(); }
+      const cat=document.querySelector('[data-toggle-fdcat="'+farmDetailsOpenCat+'"]'); if(cat) cat.scrollIntoView({block:'start', behavior:'smooth'});
+      const t=document.getElementById('fdName'); if(t) t.focus();
     };
     const fdNameEl=document.getElementById('fdName'), fdDetailsEl=document.getElementById('fdDetails');
     // Live checklist/counter — patches just those two bits of the DOM rather
@@ -12379,6 +12409,7 @@ Rules:
         await deleteFarmDetailFromSupabase(d.id);
         logMsg('Deleted farm detail <b>'+escapeHtml(d.name)+'</b>.');
         render();
+        const cat=document.querySelector('[data-toggle-fdcat="'+d.category+'"]'); if(cat) cat.scrollIntoView({block:'start', behavior:'smooth'});
         showSaveToast('Deleted');
       }, null, 'Delete', 'Cancel');
     };
@@ -12400,12 +12431,14 @@ Rules:
         rec={id:uuid(), category:farmDetailEdit.category, name, details, created_at:now, created_by_name:who, modified_at:now, modified_by_name:who, modified_by_email:email};
         farmDetails.push(rec);
       }
+      const savedCategory=rec.category;
       farmDetailEdit=null;
       await persistAll();
       await syncFarmDetailToSupabase(rec);
       const r=farmDetailRating(rec.category, rec.name, rec.details);
       logMsg('Saved farm detail <b>'+escapeHtml(rec.name)+'</b> ('+r.rag+').');
       render();
+      const cat=document.querySelector('[data-toggle-fdcat="'+savedCategory+'"]'); if(cat) cat.scrollIntoView({block:'start', behavior:'smooth'});
       showSaveToast(r.rag==='green'?'Saved \u2014 good detail':'Saved \u2014 '+FD_RAG_TEXT[r.rag].toLowerCase());
     };
     // Add/Save for whichever addable section (Breeds, Fodder types, Medicine,
