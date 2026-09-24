@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24c';
+const APP_BUILD_VERSION = '2026-09-24e';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,26 @@ const APP_BUILD_VERSION = '2026-09-24c';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24e',
+    date: '24 Sep 2026',
+    bullets: [
+      "Insights redesigned: no more Groq analysis in the app itself \u2014 it now shows what's still worth completing in Farm details (with a jump straight to each one), then Export farm summary for an online AI to do the actual analysis, which costs nothing and isn't limited by a daily quota the way the in-app version was.",
+      "Ask still uses your Groq key as before \u2014 unlike Insights, it answers from everything on the farm at once, which isn't something a PDX export to an external AI can do, so it's worth keeping the daily allowance for.",
+      "Removed the microphone button on Ask \u2014 it wasn't working, and the phone's own keyboard already has a dictation button."
+    ]
+  },
+  {
+    version: '2026-09-24d',
+    date: '24 Sep 2026',
+    bullets: [
+      "Settings > Use AI: replaced the long paragraph with a short bullet list, and a direct link to get a free key.",
+      "Animal List: the TB test button is now solid green like Move.",
+      "Settings > System Admin now shows each farm's Farm ID (e.g. WATERSWALLOWS1234) under its name, not just the name.",
+      "Settings > Breeds: more compact \u2014 species now sits on the breed's own line, and Prime age / \u00a3/kg are each one line instead of stacked boxes.",
+      "The Upload to AI popup's site buttons are now centred."
+    ]
+  },
   {
     version: '2026-09-24c',
     date: '24 Sep 2026',
@@ -1156,7 +1176,7 @@ async function loadFarmData(farmId){
 let adminFarmsList=null; // cached list for the System Admin panel — {id,name}[], alphabetical
 async function loadAdminFarmsList(){
   if(!isSuperAdmin()) return;
-  const { data, error } = await sb.from('farms').select('id,name').order('name', {ascending:true});
+  const { data, error } = await sb.from('farms').select('id,name,code').order('name', {ascending:true});
   if(!error){ adminFarmsList = data || []; render(); }
 }
 // ---------- sync scale warning ----------
@@ -5189,12 +5209,7 @@ function renderAsk(){
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Ask</span><span></span></div>
     <div class="body bigtext">
       <label style="margin-top:4px;">What do you want to know?</label>
-      <div style="position:relative;">
-        <textarea id="askQuestionInput" style="min-height:110px;padding-right:48px;" placeholder="e.g. Which animals haven\u2019t been weighed in 60 days?">${escapeHtml(askQuestionText)}</textarea>
-        <button id="askMicBtn" title="Dictate" style="position:absolute;right:8px;bottom:8px;width:36px;height:36px;background:var(--primary);border:none;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;padding:0;">
-          <span style="width:19px;height:19px;">${icon('mic')}</span>
-        </button>
-      </div>
+      <textarea id="askQuestionInput" style="min-height:110px;" placeholder="e.g. Which animals haven\u2019t been weighed in 60 days?">${escapeHtml(askQuestionText)}</textarea>
       <div id="askStatus" style="font-size:13px;color:var(--grey);margin-top:6px;display:none;"></div>
       <div style="font-size:13px;color:var(--grey);margin-top:6px;">Ask about your own farm records, or a general farming question. If a question would match a lot of animals, try being more specific \u2014 e.g. a breed, a status, or a date range.</div>
 
@@ -5829,66 +5844,53 @@ async function runExportFarmSummary(){
   }
 }
 
+function insightsChecklistItems(){
+  // What's still worth completing, worked out entirely from the same
+  // red/amber/green rating Farm details already uses \u2014 no AI call.
+  const items=[];
+  FARM_DETAIL_CATEGORIES.forEach(cat=>{
+    const def=FARM_DETAIL_TYPES[cat];
+    const entries=farmDetails.filter(d=>d.category===cat);
+    if(!entries.length){
+      items.push({cat, entryId:null, title:'Add your first '+def.singular, detail:'Nothing recorded yet in '+def.label+'.', rag:'red'});
+      return;
+    }
+    entries.forEach(d=>{
+      const r=farmDetailRating(cat, d.name, d.details);
+      if(r.rag!=='green'){
+        items.push({cat, entryId:d.id, title:d.name, detail:r.missingEssential.length?'Missing: '+r.missingEssential.map(fdShortLabel).join(', '):'Could use more detail', rag:r.rag});
+      }
+    });
+  });
+  return items;
+}
 function renderOpportunitiesBody(){
-  const aiReady=farmSettings.use_ai===true && !!farmSettings.groq_api_key;
-  const o=farmOpportunitiesLatest;
-  const intro=`<div style="font-size:14.5px;color:var(--grey);margin-bottom:12px;">aBC looks at everything you\u2019ve recorded \u2014 your animals, costs, health records and <a href="#" id="oppGoFarmDetails" style="color:var(--link);font-weight:700;">Farm details</a> \u2014 and searches for funding, savings and improvements that may suit your farm.</div>`;
-  let html=intro;
-  if(!aiReady){
-    html+=`<div class="warnbanner" style="display:block;">This needs AI turned on with a Groq API key. <a href="#" id="oppGoUseAi" style="color:inherit;font-weight:800;text-decoration:underline;">Turn it on in Settings</a>.</div>`;
-  }
-  if(oppRunning){
-    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:16px;text-align:center;margin-bottom:12px;background:#fafafa;">
-      <div class="oppspinner"></div>
-      <div id="oppProgressText" style="font-size:15px;font-weight:700;color:var(--ink);">${escapeHtml(oppProgress)}</div>
-      <div style="font-size:12.5px;color:var(--grey);margin-top:6px;">Keep this screen open \u00b7 <span id="oppElapsed">${oppStartedAt?Math.round((Date.now()-oppStartedAt)/1000):0}s</span></div>
+  const bullets=[
+    'The more you use aBC Stockman, the more information is available for insights.',
+    'Add as many <a href=\"#\" id=\"insightsGoFarmDetails\" style=\"color:var(--link);font-weight:700;\">farm details</a> as possible.',
+    'Complete the recommendations below as best you can, even if estimates.',
+    'Export the summary of your farm.',
+    'Upload this file to an online AI to give you insights.',
+    '<b>NOTE:</b> insights take a lot of calculations. Doing it in the app is expensive. Online processing is free.',
+  ];
+  let html=`<ul style=\"margin:2px 2px 16px;padding-left:20px;font-size:14px;color:var(--ink);line-height:1.7;\">${bullets.map(b=>'<li>'+b+'</li>').join('')}</ul>`;
+  const items=insightsChecklistItems();
+  if(!items.length){
+    html+=`<div style=\"text-align:center;padding:18px 10px;color:var(--grey);\">
+      <div style=\"width:44px;height:44px;margin:0 auto 8px;color:var(--primary);\">${icon('tickCircle')}</div>
+      <div style=\"font-size:15px;\">Your Farm details are looking complete \u2014 you're ready to export.</div>
     </div>`;
+  } else {
+    html+=`<div style=\"font-size:12px;font-weight:800;color:var(--grey);text-transform:uppercase;margin:4px 0 6px;\">Worth completing</div>`;
+    html+=items.map(it=>`
+      <button data-insightsjump=\"${it.cat}\" data-insightsentry=\"${it.entryId||''}\" style=\"width:100%;text-align:left;display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--${it.rag});border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;\">
+        <div style=\"flex:1;min-width:0;\">
+          <div style=\"font-size:14.5px;font-weight:700;color:var(--ink);\">${escapeHtml(it.title)}</div>
+          <div style=\"font-size:12.5px;color:var(--grey);margin-top:2px;\">${escapeHtml(it.detail)}</div>
+        </div>
+        <span style=\"width:18px;height:18px;flex-shrink:0;color:var(--grey);\">${icon('triangleRight')}</span>
+      </button>`).join('');
   }
-  if(oppError) html+=`<div style="background:var(--red-bg);color:var(--red);border-radius:8px;padding:10px 12px;font-size:14px;font-weight:700;margin-bottom:12px;">${escapeHtml(oppError)}</div>`;
-  if(!o){
-    if(!oppRunning) html+=`<div style="text-align:center;padding:24px 10px;color:var(--grey);">
-      <div style="width:52px;height:52px;margin:0 auto 10px;color:var(--primary);">${icon('lightbulb')}</div>
-      <div style="font-size:16px;">Tap <b>Analyse</b> below to check your farm.</div>
-      <div style="font-size:13px;margin-top:8px;">The more you add to Farm details (fields, buildings, machinery), the better the results.</div></div>`;
-    return html;
-  }
-  const r=o.result||{opportunities:[], data_gaps:[]};
-  const shown=r.opportunities.filter(x=>x.status!=='low_relevance');
-  const low=r.opportunities.filter(x=>x.status==='low_relevance');
-  const loc=o.location||{};
-  const locText=loc.country ? [loc.local_authority, loc.county, loc.country].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(', ') : (loc.description||'location not recorded');
-  html+=`
-    <div style="font-size:20px;font-weight:800;color:var(--ink);margin:4px 0 4px;">${shown.length?`We\u2019ve found ${shown.length} thing${shown.length===1?'':'s'} worth looking at.`:'Nothing strong found this time.'}</div>
-    ${r.headline?`<div style="font-size:14.5px;color:var(--ink);margin-bottom:6px;">${escapeHtml(r.headline)}</div>`:''}
-    <div style="font-size:12px;color:var(--grey);margin-bottom:10px;">Checked ${escapeHtml(fmtDateTimeShort(o.created_at))}${o.created_by_name?' by '+escapeHtml(o.created_by_name):''} \u00b7 ${escapeHtml(locText)}</div>
-    ${o.web_research?'':`<div class="warnbanner" style="display:block;font-size:13px;">Groq couldn\u2019t search the web on this run, so these are based on the AI\u2019s general knowledge only \u2014 schemes may have changed or closed. Try Analyse again later.${o.research_diag?`<div style="margin-top:6px;font-size:11.5px;opacity:.8;font-family:monospace;">${escapeHtml(o.research_diag)}</div>`:''}</div>`}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 14px;">
-      ${OPP_GROUPS.map(g=>{
-        const n=shown.filter(x=>oppGroupKey(x)===g.key).length;
-        return `<button data-oppjump="${g.key}" ${n?'':'disabled'} style="border:1px solid var(--line);border-radius:10px;background:${n?'#fff':'#f5f5f5'};padding:12px 10px;text-align:left;cursor:${n?'pointer':'default'};">
-          <div style="font-size:15px;font-weight:800;color:${n?'var(--ink)':'var(--grey)'};">${g.label}</div>
-          <div style="font-size:13px;color:${n?'var(--primary)':'var(--grey)'};font-weight:700;margin-top:2px;">${n} opportunit${n===1?'y':'ies'}</div>
-        </button>`;
-      }).join('')}
-    </div>
-    ${OPP_GROUPS.map(g=>{
-      const items=shown.filter(x=>oppGroupKey(x)===g.key);
-      if(!items.length) return '';
-      return `<div id="oppgroup-${g.key}" style="font-size:12px;font-weight:800;color:var(--grey);text-transform:uppercase;margin:16px 0 6px;">${g.label}</div>${items.map(oppCardHtml).join('')}`;
-    }).join('')}
-    ${low.length?`
-      <button id="oppToggleLow" class="damagebar" style="background:var(--grey-light);font-size:14px;padding:10px 12px;margin-top:16px;">
-        <span>Also considered \u2014 low relevance (${low.length})</span><span style="width:18px;height:18px;">${icon(oppShowLow?'triangleDown':'triangleRight')}</span>
-      </button>
-      ${oppShowLow?low.map(oppCardHtml).join(''):''}`:''}
-    ${r.data_gaps && r.data_gaps.length?`
-      <div style="font-size:12px;font-weight:800;color:var(--grey);text-transform:uppercase;margin:18px 0 6px;">Tell aBC more to find more</div>
-      ${r.data_gaps.map(g=>`
-        <div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line);">
-          <div style="flex:1;font-size:14px;"><b>${escapeHtml(g.item)}</b>${g.why?`<div style="font-size:12.5px;color:var(--grey);margin-top:2px;">${escapeHtml(g.why)}</div>`:''}</div>
-          <button data-oppaddinfo="${g.farm_detail_category==='none'?'other':g.farm_detail_category}" data-oppitem="${escapeHtml(g.item)}" style="flex-shrink:0;border:1px solid var(--green);color:var(--green);background:#fff;border-radius:16px;padding:4px 10px;font-size:13px;font-weight:700;cursor:pointer;">+ Add</button>
-        </div>`).join('')}`:''}
-    <div style="font-size:12px;color:var(--grey);margin-top:18px;line-height:1.5;">aBC doesn\u2019t guarantee funding, savings or eligibility. Always check the official scheme rules before applying or spending money. Results come from AI and may contain mistakes.</div>`;
   return html;
 }
 function oppCardHtml(x){
@@ -6147,7 +6149,7 @@ function renderReportDetail(){
       ${rows.length>sellShowCount?`<button id="sell-showmore" class="fullbtn ghost" style="margin-top:10px;">Show 30 more (${rows.length-sellShowCount} left)</button>`:''}`;
   }
   else if(type==='insights'){
-    title='Farm Opportunities';
+    title='Insights';
     body=renderOpportunitiesBody();
   }
   else if(type==='realized'){
@@ -6187,7 +6189,6 @@ function renderReportDetail(){
     ] : type==='insights' ? [
       {id:'reportdetail-help', icon:'help', label:'Help'},
       {id:'reportdetail-exportpdf', label:pdfExporting?'Exporting\u2026':'Export<br>farm<br>summary', disabled:pdfExporting, primary:true, style:'border:2px solid var(--primary-dark);'},
-      ...((farmSettings.use_ai===true && farmSettings.groq_api_key && !oppRunning) ? [{id:'reportdetail-oppsrun', icon:'lightbulb', label:farmOpportunitiesLatest?'Re-check':'Analyse', primary:true}] : []),
       {id:'reportdetail-home', icon:'home', label:'Home', home:true},
     ] : [{id:'reportdetail-help', icon:'help', label:'Help'}, {id:'reportdetail-home', icon:'home', label:'Home', home:true}])}`;
 }
@@ -6778,7 +6779,7 @@ function renderHerd(){
     </div>
     ${footerBar(herdSelectMode ? [
       {id:'herd-help', icon:'help', label:'Help'},
-      {id:'herd-tbtest', icon:'syringe', label:'TB test', bordered:true},
+      {id:'herd-tbtest', icon:'syringe', label:'TB test', primary:true},
       {id:'herd-move', icon:'pin', label:'Move', primary:true},
       {id:'herd-home', icon:'home', label:'Home', home:true},
     ] : [
@@ -8276,7 +8277,7 @@ function renderSettings(){
       const isCurrent=f.id===authFarmId;
       return `
       <button data-adminswitchfarm="${f.id}" ${isCurrent?'disabled':''} style="width:100%;text-align:left;background:${isCurrent?'var(--green-bg)':'#f3f3f3'};border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;cursor:${isCurrent?'default':'pointer'};color:var(--ink);font-size:15px;font-weight:700;">
-        <span>${escapeHtml(f.name)}${isCurrent?' <span style="font-weight:400;color:var(--primary);font-size:13px;">(current)</span>':''}</span>
+        <span><span>${escapeHtml(f.name)}${isCurrent?' <span style="font-weight:400;color:var(--primary);font-size:13px;">(current)</span>':''}</span><br><span style="font-weight:400;font-size:12.5px;color:var(--grey);">${f.code?escapeHtml(f.code):'No Farm ID set'}</span></span>
         ${isCurrent?'':`<span style="width:18px;height:18px;flex-shrink:0;color:var(--grey);">${icon('triangleRight')}</span>`}
       </button>`;
     }).join('');
@@ -8286,14 +8287,27 @@ function renderSettings(){
   const breedsBody = sortedBreeds(breeds).map(b=>`
     <div class="row" style="cursor:default;align-items:flex-start;margin:3px 0;">
       <div style="flex:1;min-width:0;">
-        <div class="name" style="font-size:16px;">${b.name}</div><div class="id" style="font-size:13px;">${b.species}</div>
-        <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:flex-end;">
-          ${miniField('Min Prime (mo)', `<input type="number" data-breed-minprime="${b.id}" value="${b.min_prime_months!=null?b.min_prime_months:18}" style="width:68px;padding:6px 8px;font-size:15px;">`)}
-          ${miniField('Max Prime (mo)', `<input type="number" data-breed-maxprime="${b.id}" value="${b.max_prime_months!=null?b.max_prime_months:30}" style="width:68px;padding:6px 8px;font-size:15px;">`)}
-          ${miniField('£/kg', `<input type="number" inputmode="decimal" data-breed-price="${b.id}" value="${b.price_per_kg!=null?b.price_per_kg:''}" placeholder="\u2014" style="width:68px;padding:6px 8px;font-size:15px;">`)}
-          <button data-breedvaluehistory="${b.id}" title="See £/kg over time" class="breedhistorybtn" style="background:none;border:none;color:var(--primary);display:flex;align-items:center;gap:4px;padding:6px 0;flex-shrink:0;">
-            <span style="font-size:13px;font-weight:700;">View history</span>${icon('lineChart')}
-          </button>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+          <div class="name" style="font-size:16px;">${b.name}</div>
+          <div style="font-size:13px;color:var(--grey);white-space:nowrap;flex-shrink:0;">${b.species}</div>
+        </div>
+        <div style="margin-top:6px;">
+          <label style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;display:block;margin-bottom:2px;">Prime age</label>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input type="number" data-breed-minprime="${b.id}" value="${b.min_prime_months!=null?b.min_prime_months:18}" style="width:58px;padding:6px 8px;font-size:15px;">
+            <span style="font-size:14px;color:var(--grey);">to</span>
+            <input type="number" data-breed-maxprime="${b.id}" value="${b.max_prime_months!=null?b.max_prime_months:30}" style="width:58px;padding:6px 8px;font-size:15px;">
+            <span style="font-size:14px;color:var(--grey);">months</span>
+          </div>
+        </div>
+        <div style="margin-top:6px;">
+          <label style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;display:block;margin-bottom:2px;">£/kg</label>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <input type="number" inputmode="decimal" data-breed-price="${b.id}" value="${b.price_per_kg!=null?b.price_per_kg:''}" placeholder="\u2014" style="width:68px;padding:6px 8px;font-size:15px;">
+            <button data-breedvaluehistory="${b.id}" title="See £/kg over time" class="breedhistorybtn" style="background:none;border:none;color:var(--primary);display:flex;align-items:center;gap:4px;padding:6px 0;flex-shrink:0;">
+              <span style="font-size:13px;font-weight:700;">View history</span>${icon('lineChart')}
+            </button>
+          </div>
         </div>
       </div>
       <button data-toggle-breed="${b.id}" title="${b.active?'Active \u2014 tap to deactivate':'Deactivated \u2014 tap to reactivate'}" style="background:none;border:none;width:30px;height:30px;flex-shrink:0;color:${b.active?'var(--grey)':'var(--red)'};padding:0;">${icon('noentry')}</button>
@@ -8541,13 +8555,24 @@ function renderSettings(){
             <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiYes" ${farmSettings.use_ai===true?'checked':''}> Yes</label>
             <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAiRadio" id="useAiNo" ${farmSettings.use_ai!==true?'checked':''}> No</label>
           </div></div>
-          <div style="font-size:13px;color:var(--grey);margin-top:8px;">Turns on the "Ask" feature in Reports \u2014 lets you type or speak a question and get an answer using your own farm records, plus general farming knowledge. Also used for enhanced tag reading \u2014 when scanning an EID tag, this is tried first and reads angled, worn, or stylised tags far better than the built-in offline reader (which is still used as an automatic fallback if there's no signal or the request fails, so tag scanning always still works either way). Off by default. This is a farm-wide setting, shared with everyone signed in to this farm \u2014 turning it on or off here changes it for all of you. The AI provider only sees your question (for Ask) or the tag photo (for tag reading), plus a summary of your records needed to answer it, nothing more.</div>
+          <ul style="margin:10px 2px 0;padding-left:18px;font-size:13.5px;color:var(--grey);line-height:1.7;">
+            <li>Your data is 100% private \u2014 it isn't shared or stored anywhere else.</li>
+            <li>AI is used within aBC Stockman to:
+              <ul style="margin:2px 0 4px;padding-left:18px;">
+                <li>Read animal tags and passports</li>
+                <li>Analyse injuries and recommend treatment</li>
+                <li>Enable the "Ask" feature in Reports</li>
+                <li>Give insights for grants, efficiencies and more</li>
+              </ul>
+            </li>
+            <li>To minimise costs, use your own free AI account.</li>
+            <li>Click <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="color:var(--link);font-weight:700;">HERE</a> to get your free license key, then save it below.</li>
+          </ul>
           ${farmSettings.use_ai===true?`
           <div style="border-top:1px solid var(--line);margin:14px 0 0;padding-top:14px;">
-            <label style="margin-top:0;">Groq API key</label>
+            <label style="margin-top:0;">License key</label>
             <input type="text" id="groqApiKey" placeholder="Paste your key here" value="${farmSettings.groq_api_key?escapeHtml(farmSettings.groq_api_key):''}" autocapitalize="off" autocorrect="off" spellcheck="false">
-            <div style="font-size:13px;color:var(--grey);margin-top:8px;">One key for the whole farm \u2014 whoever enters it here, everyone signed in to this farm uses it (and shares its daily usage allowance, so is worth keeping an eye on with several people scanning). Free to get, no credit card needed, sign up with any email (a Google account isn't required).</div>
-            <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px;font-size:13px;color:var(--link);">Get a Groq API key from console.groq.com &rarr;</a>
+            <div style="font-size:13px;color:var(--grey);margin-top:8px;">One key for the whole farm \u2014 whoever enters it here, everyone signed in to this farm uses it (and shares its daily usage allowance, so is worth keeping an eye on with several people scanning).</div>
           </div>`:''}
         </div>`:''}
       </div>
@@ -9424,7 +9449,7 @@ function renderModal(){
     ];
     div.innerHTML=`<div class="modal">
       <div style="font-size:15px;color:var(--ink);line-height:1.5;margin-bottom:14px;">Upload this summary to any AI site for more insights. These are the most common:</div>
-      ${sites.map(s=>`<button data-pdfopensite="${s.url}" style="width:100%;display:flex;align-items:center;gap:12px;background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:8px;font-size:16px;font-weight:700;color:var(--ink);cursor:pointer;">${AI_SITE_ICONS[s.id]}<span>${s.label}</span></button>`).join('')}
+      ${sites.map(s=>`<button data-pdfopensite="${s.url}" style="width:100%;display:flex;align-items:center;justify-content:center;gap:12px;background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:8px;font-size:16px;font-weight:700;color:var(--ink);cursor:pointer;">${AI_SITE_ICONS[s.id]}<span>${s.label}</span></button>`).join('')}
       <button class="fullbtn" id="modalCancel" style="background:none;border:1px solid var(--line);color:var(--ink);margin-top:14px;">Close</button>
     </div>`;
   }
@@ -11427,32 +11452,22 @@ function wireView(){
     if(reportType==='insights'){
       const exportBtn=document.getElementById('reportdetail-exportpdf');
       if(exportBtn) exportBtn.onclick=()=>runExportFarmSummary();
-      const runBtn=document.getElementById('reportdetail-oppsrun');
-      if(runBtn) runBtn.onclick=()=>{ runFarmOpportunities(); };
-      document.querySelectorAll('[data-oppjump]').forEach(el=>el.onclick=()=>{ const t=document.getElementById('oppgroup-'+el.dataset.oppjump); if(t) t.scrollIntoView({block:'start', behavior:'smooth'}); });
-      document.querySelectorAll('[data-oppopen]').forEach(el=>el.onclick=()=>{
-        const id=el.dataset.oppopen, section=el.dataset.oppsection;
-        oppOpen = (oppOpen && oppOpen.id===id && oppOpen.section===section) ? null : {id, section};
-        const y=window.scrollY; render(); window.scrollTo(0,y);
-      });
-      const lowBtn=document.getElementById('oppToggleLow');
-      if(lowBtn) lowBtn.onclick=()=>{ oppShowLow=!oppShowLow; const y=window.scrollY; render(); window.scrollTo(0,y); };
-      // "+ Add" on anything unknown: straight into a new Farm details entry
-      // of the right type, with what's missing already started for them.
-      document.querySelectorAll('[data-oppaddinfo]').forEach(el=>el.onclick=()=>{
-        const cat=FARM_DETAIL_TYPES[el.dataset.oppaddinfo]?el.dataset.oppaddinfo:'other';
+      // Each checklist row jumps straight to that Farm details entry (or,
+      // for an empty category, opens a fresh one there) instead of the
+      // farmer having to find it themselves in Settings.
+      document.querySelectorAll('[data-insightsjump]').forEach(el=>el.onclick=()=>{
+        const cat=el.dataset.insightsjump, entryId=el.dataset.insightsentry;
         view='settings'; settingsOpenSection='farmdetails'; farmDetailsOpenCat=cat;
-        farmDetailEdit={id:null, category:cat, name:'', details:(el.dataset.oppitem||'')+': '};
+        const existing=entryId?farmDetails.find(d=>d.id===entryId):null;
+        farmDetailEdit=existing?{id:existing.id, category:cat, name:existing.name, details:existing.details||''}:{id:null, category:cat, name:'', details:''};
         render();
         const t=document.getElementById('fdName'); if(t){ t.scrollIntoView({block:'center', behavior:'smooth'}); t.focus(); }
       });
-      const goFd=document.getElementById('oppGoFarmDetails');
+      const goFd=document.getElementById('insightsGoFarmDetails');
       if(goFd) goFd.onclick=(e)=>{ e.preventDefault(); view='settings'; settingsOpenSection='farmdetails'; farmDetailEdit=null; render(); };
-      const goAi=document.getElementById('oppGoUseAi');
-      if(goAi) goAi.onclick=(e)=>{ e.preventDefault(); view='settings'; settingsOpenSection='useai'; render(); const t=document.getElementById('settingsSection-useai'); if(t) t.scrollIntoView({block:'start'}); };
     }
     document.getElementById('reportdetail-help').onclick=()=>{
-      if(reportType==='insights'){ showInfoModal('\u2022 Tap Analyse to check your farm. aBC sends a summary of your records to Groq (your AI key) \u2014 counts, averages, costs and your Farm details, but no CPH, tag numbers, EIDs or names \u2014 and searches the web for current schemes and ideas.\n\n\u2022 Strong match: what you\u2019ve recorded appears to meet the published criteria. Potential match: some of it matches but key details are missing. Needs more info: could be relevant, but aBC doesn\u2019t know enough yet.\n\n\u2022 Why? shows what aBC knows, what it\u2019s assuming, what\u2019s unknown and the source. Tap + Add to fill a gap in Farm details, then Re-check.\n\n\u2022 Results are AI-generated and can be wrong. aBC never guarantees funding \u2014 always check the official rules before applying.'); return; }
+      if(reportType==='insights'){ showInfoModal('\u2022 This screen shows what\u2019s still worth completing in Farm details \u2014 tap any item to jump straight to it and fill it in, even as an estimate.\n\n\u2022 Export farm summary makes a PDF of everything recorded, ready to upload to any AI assistant (ChatGPT, Claude, Gemini) for the actual analysis \u2014 funding, savings, improvements and more \u2014 free, and without using up your Groq allowance.'); return; }
       if(reportType==='sellyes' && herdSelectMode){ showInfoModal('Tap more animals to add them to the selection, then tap Move to send them all to market together. Tap the back arrow to cancel.'); return; }
       const base = reportType==='donetoday'
         ? 'Counts everything recorded against today\u2019s date across the whole farm \u2014 weighing, moves, medicine, injuries, damage, fodder, and animals added or exited. Tap a row to see exactly what made it up. Use "Done by" to filter to one farm hand \u2014 this only works for entries logged while that person was selected via Switch user, so make sure everyone logs in as themselves rather than leaving it on Admin.'
@@ -11631,22 +11646,6 @@ function wireView(){
     const questionInput=document.getElementById('askQuestionInput');
     questionInput.oninput=(e)=>{ askQuestionText=e.target.value; };
     const askStatus=document.getElementById('askStatus');
-    document.getElementById('askMicBtn').onclick=()=>{
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if(!SpeechRecognition){ showInfoModal('Voice input isn\u2019t supported on this browser \u2014 you can still type your question.'); return; }
-      const recog = new SpeechRecognition();
-      recog.lang='en-GB'; recog.interimResults=false; recog.maxAlternatives=1;
-      askStatus.style.display='block'; askStatus.style.color='var(--grey)'; askStatus.textContent='Listening\u2026';
-      recog.onresult=(e)=>{
-        const transcript=e.results[0][0].transcript;
-        questionInput.value = questionInput.value.trim() ? questionInput.value.trim()+' '+transcript : transcript;
-        askQuestionText=questionInput.value;
-        askStatus.style.display='none';
-      };
-      recog.onerror=()=>{ askStatus.style.color='var(--red)'; askStatus.textContent='Couldn\u2019t hear that \u2014 try again or type instead.'; };
-      recog.onend=()=>{ if(askStatus.textContent==='Listening\u2026') askStatus.style.display='none'; };
-      try{ recog.start(); } catch(err){ askStatus.style.color='var(--red)'; askStatus.textContent='Couldn\u2019t start listening \u2014 try typing instead.'; }
-    };
     document.getElementById('ask-go').onclick=async()=>{
       const question=questionInput.value.trim();
       if(!question){ showInfoModal('Type or dictate a question first.'); return; }
