@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24j';
+const APP_BUILD_VERSION = '2026-09-24k';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-24j';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24k',
+    date: '24 Sep 2026',
+    bullets: [
+      "Brought the logo and \"smart stockman's companion\" bullet points back to the sign-in screen \u2014 lost when the old screen was retired, not intentionally dropped.",
+    ]
+  },
   {
     version: '2026-09-24j',
     date: '24 Sep 2026',
@@ -4242,8 +4249,14 @@ function renderSupaLogin(){
   return `
     <div style="display:flex;flex-direction:column;min-height:100%;">
       <div style="border:1px solid var(--line);border-radius:14px;margin:14px;overflow:hidden;background:#fff;display:flex;flex-direction:column;flex:1;">
-        <div style="padding:32px 22px 4px;text-align:center;">
-          <div style="font-size:20px;font-weight:800;margin-bottom:10px;">aBC Stockman</div>
+        <div style="padding:14px 22px 0;text-align:center;">
+          <img src="${LOGO_DATA_URL}" alt="aBC Stockman" style="width:88px;height:88px;display:block;margin:0 auto;">
+          <div style="font-size:13.5px;font-weight:700;margin:6px 0 6px;">The smart stockman's companion:</div>
+          <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:3px 10px;margin-bottom:8px;">
+            ${LOGIN_BULLETS.map(b=>`<span style="font-size:12px;color:var(--grey);">&bull; ${b}</span>`).join('')}
+          </div>
+        </div>
+        <div style="padding:4px 22px 4px;text-align:center;">
           <div style="font-size:14px;color:var(--grey);">${pcMode
             ? 'Enter your Farm ID and passcode to sign in.'
             : magicLinkSent
