@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24s';
+const APP_BUILD_VERSION = '2026-09-24t';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-24s';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24t',
+    date: '24 Sep 2026',
+    bullets: [
+      "Moved Cost per kg gained out of Insights and into its own Reports tile \u2014 Insights was getting cluttered and losing its one job (filling in Farm details for the export). Tap the tile in Reports to scroll to if it's off the bottom of the screen; nothing else about it changed.",
+    ]
+  },
   {
     version: '2026-09-24s',
     date: '24 Sep 2026',
@@ -5290,6 +5297,7 @@ function renderReports(){
         ${tile('rep-roi','roi','ROI<br><span style="font-size:11px;">(cost vs current)</span>',{color:'var(--grey)'})}
         ${tile('rep-sellkeep','gavel','Sell/Keep',{color:'var(--green)'})}
         ${tile('rep-realized','roi','Realised profit/loss<br><span style="font-size:11px;">(Monthly)</span>',{color:'var(--grey)'})}
+        ${tile('rep-costperkg','lineChart','Cost/kg gained<br><span style="font-size:11px;">(12 months)</span>',{color:'var(--grey)'})}
       </div>
     </div>
     ${footerBar([
@@ -6134,32 +6142,6 @@ function buildCostPerKgReport(){
 
   return { rows, totalFeedCost, med12, realisedValue, overallMargin, hasGainData: rows.some(r=>r.animalsWithGain>0), hasSales: exited.length>0 };
 }
-function renderCostPerKgSection(){
-  const r=buildCostPerKgReport();
-  let html=`<div style="font-size:12px;font-weight:800;color:var(--grey);text-transform:uppercase;margin:18px 0 2px;">Cost per kg gained (last 12 months)</div>
-    <div style="font-size:12px;color:var(--grey);margin-bottom:8px;">Estimate \u2014 medicine is exact per animal, but feed cost isn\u2019t tracked per animal, so it\u2019s split evenly across your active animals by headcount.</div>`;
-  if(!r.hasGainData){
-    html+=`<div style="font-size:13.5px;color:var(--grey);padding:4px 2px 10px;">Not enough repeat weighings yet to work this out \u2014 weigh the same animals again a few weeks apart and it\u2019ll appear here.</div>`;
-    return html;
-  }
-  html+=r.rows.filter(g=>g.animalsWithGain>0).map(g=>`
-    <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <div style="font-size:14.5px;font-weight:700;color:var(--ink);">${escapeHtml(g.breed)}</div>
-        <div style="font-size:12.5px;color:var(--grey);">${g.count} animal${g.count===1?'':'s'}</div>
-      </div>
-      ${g.costPerKg!=null?`<div style="font-size:15px;font-weight:800;color:var(--primary);margin-top:3px;">${fmtGBP(g.costPerKg,2)}/kg gained</div>`:`<div style="font-size:13px;color:var(--grey);margin-top:3px;">Not enough repeat weighings for this group yet.</div>`}
-      <div style="font-size:12px;color:var(--grey);margin-top:2px;">Feed (est.) ${fmtGBPSmart(g.feedCost)} + Medicine ${fmtGBPSmart(g.medCost)} over ${g.kgGained.toFixed(0)}kg gained</div>
-    </div>`).join('');
-  if(r.hasSales){
-    html+=`<div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:4px;">
-      <div style="font-size:14.5px;font-weight:700;color:var(--ink);">Realised margin</div>
-      <div style="font-size:15px;font-weight:800;color:${r.overallMargin>=0?'var(--green)':'var(--red)'};margin-top:3px;">${fmtGBPSmart(r.overallMargin)}</div>
-      <div style="font-size:12px;color:var(--grey);margin-top:2px;">Sale value ${fmtGBPSmart(r.realisedValue)} \u2212 feed ${fmtGBPSmart(r.totalFeedCost)} \u2212 medicine ${fmtGBPSmart(r.med12)}, for animals sold/exited in the last 12 months.</div>
-    </div>`;
-  }
-  return html;
-}
 function renderOpportunitiesBody(){
   const bullets=[
     'The more you use aBC Stockman, the more information is available for insights.',
@@ -6187,7 +6169,6 @@ function renderOpportunitiesBody(){
         <span style=\"width:18px;height:18px;flex-shrink:0;color:var(--grey);\">${icon('triangleRight')}</span>
       </button>`).join('');
   }
-  html += renderCostPerKgSection();
   return html;
 }
 function oppCardHtml(x){
@@ -6448,6 +6429,25 @@ function renderReportDetail(){
   else if(type==='insights'){
     title='Insights';
     body=renderOpportunitiesBody();
+  }
+  else if(type==='costperkg'){
+    title='Cost per kg gained';
+    const r=buildCostPerKgReport();
+    body=`<div style="font-size:15px;color:var(--grey);margin-bottom:12px;">Estimate \u2014 medicine cost is exact per animal, but feed cost isn\u2019t tracked per animal, so it\u2019s split evenly across your active animals by headcount. Covers the last 12 months.</div>`
+      + (r.hasGainData ? r.rows.filter(g=>g.animalsWithGain>0).map(g=>`
+        <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <div style="font-size:16px;font-weight:700;color:var(--ink);">${escapeHtml(g.breed)}</div>
+            <div style="font-size:13px;color:var(--grey);">${g.count} animal${g.count===1?'':'s'}</div>
+          </div>
+          ${g.costPerKg!=null?`<div style="font-size:19px;font-weight:800;color:var(--primary);margin-top:4px;">${fmtGBP(g.costPerKg,2)}/kg gained</div>`:`<div style="font-size:14px;color:var(--grey);margin-top:4px;">Not enough repeat weighings for this group yet.</div>`}
+          <div style="font-size:13px;color:var(--grey);margin-top:3px;">Feed (est.) ${fmtGBPSmart(g.feedCost)} + Medicine ${fmtGBPSmart(g.medCost)} over ${g.kgGained.toFixed(0)}kg gained</div>
+        </div>`).join('') : `<div class="empty" style="padding:10px 4px;">Not enough repeat weighings yet to work this out \u2014 weigh the same animals again a few weeks apart and it\u2019ll appear here.</div>`)
+      + (r.hasSales ? `<div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-top:4px;">
+          <div style="font-size:16px;font-weight:700;color:var(--ink);">Realised margin</div>
+          <div style="font-size:19px;font-weight:800;color:${r.overallMargin>=0?'var(--green)':'var(--red)'};margin-top:4px;">${fmtGBPSmart(r.overallMargin)}</div>
+          <div style="font-size:13px;color:var(--grey);margin-top:3px;">Sale value ${fmtGBPSmart(r.realisedValue)} \u2212 feed ${fmtGBPSmart(r.totalFeedCost)} \u2212 medicine ${fmtGBPSmart(r.med12)}, for animals sold/exited in the last 12 months.</div>
+        </div>` : '');
   }
   else if(type==='realized'){
     title='Realised profit/loss (monthly)';
@@ -11796,6 +11796,7 @@ function wireView(){
     document.getElementById('rep-sellkeep').onclick=()=>go('sellyes'); // Sell/Keep opens on Sell; the radio at the top switches it
     document.getElementById('rep-insights').onclick=()=>go('insights');
     document.getElementById('rep-realized').onclick=()=>go('realized');
+    document.getElementById('rep-costperkg').onclick=()=>go('costperkg');
     const repAskBtn=document.getElementById('rep-ask');
     if(repAskBtn) repAskBtn.onclick=()=>{ askQuestionText=''; askAnswer=null; askError=null; askLoading=false; view='ask'; render(); };
   }
