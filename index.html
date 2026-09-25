@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24p';
+const APP_BUILD_VERSION = '2026-09-24s';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,28 @@ const APP_BUILD_VERSION = '2026-09-24p';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24s',
+    date: '24 Sep 2026',
+    bullets: [
+      "\"What does the farm do?\" now has the same red/amber/green checker as Farm details \u2014 checks for what you produce, species and system as key details, with scale, how you sell and what you deliberately don't do as useful extras. Updates live as you type.",
+    ]
+  },
+  {
+    version: '2026-09-24r',
+    date: '24 Sep 2026',
+    bullets: [
+      "Settings > Farm: new \"What does the farm do?\" field \u2014 dairy, store lamb, pedigree breeding, suckler-to-finish, whatever fits. It's now the first thing on both the farm and animal summary PDFs, so an AI (or a vet, or a buyer) reading one knows what the farm's actually for before it sees a single number.",
+    ]
+  },
+  {
+    version: '2026-09-24q',
+    date: '24 Sep 2026',
+    bullets: [
+      "Moved Export from Animal Details to the animal's Timeline screen \u2014 renamed Export, with an upload icon, still solid green as the main action there.",
+      "Animal Details' Remove button is back.",
+    ]
+  },
   {
     version: '2026-09-24p',
     date: '24 Sep 2026',
@@ -1252,8 +1274,9 @@ async function loadFarmData(farmId){
     farmSettings.use_ai = !!remoteFarmSettings.use_ai;
     farmSettings.groq_api_key = remoteFarmSettings.groq_api_key||null;
     farmSettings.tb_test_interval_months = remoteFarmSettings.tb_test_interval_months||6;
+    farmSettings.business_description = remoteFarmSettings.business_description||'';
   } else {
-    await sb.from('farm_settings').insert({ farm_id:farmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false, manage_fodder_spend:farmSettings.manage_fodder_spend!==false, use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null, tb_test_interval_months:tbTestIntervalMonths() });
+    await sb.from('farm_settings').insert({ farm_id:farmId, cph:farmSettings.cph||null, farm_location:farmSettings.farm_location||null, typical_gestation_days:farmSettings.typical_gestation_days||283, use_animal_names:farmSettings.use_animal_names!==false, manage_fodder_spend:farmSettings.manage_fodder_spend!==false, use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null, tb_test_interval_months:tbTestIntervalMonths(), business_description:farmSettings.business_description||null });
   }
 
   // Per-user settings — this signed-in person's own row only, never
@@ -1711,6 +1734,7 @@ async function syncFarmSettingsToSupabase(){
     manage_fodder_spend:farmSettings.manage_fodder_spend!==false,
     use_ai:!!farmSettings.use_ai, groq_api_key:farmSettings.groq_api_key||null,
     tb_test_interval_months:tbTestIntervalMonths(),
+    business_description:farmSettings.business_description||null,
   }});
 }
 // Per-user — deliberately keyed by user_id alone, never farm_id. See the
@@ -5531,6 +5555,7 @@ function buildOpportunityFarmContext(location){
     const firstDates=[...weights.map(w=>w.recorded_at), ...medicineRecords.map(r=>r.administered_at)].filter(Boolean).sort();
     ctx.aBC_records_start=firstDates.length?firstDates[0].slice(0,10):null;
   }catch(e){}
+  ctx.farm_business_description = farmSettings.business_description || null;
   ctx.already_shown_elsewhere_in_app = attentionCoveredTopics();
   ctx.farm_details_entered_by_farmer = farmDetails.map(d=>({ ref:d.id, type:d.category, name:d.name, details:d.details||'' }));
   if(!farmDetails.length) ctx.farm_details_entered_by_farmer_note='The farmer has not described any fields, buildings, machinery or other resources yet \u2014 land, soil, buildings, hedges etc. are all UNKNOWN.';
@@ -5870,6 +5895,12 @@ async function buildFarmSummaryPdfBlob(){
   const locText = location && location.country ? [location.local_authority, location.county, location.country].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(', ') : (location && location.description) || 'Location not recorded';
   doc.text('Generated '+fmtDateTimeShort(new Date().toISOString())+'  \u2014  '+locText, 14, y); y+=10;
 
+  if(farmSettings.business_description){
+    doc.setFont(undefined,'bold'); doc.text('What the farm does:', 14, y); y+=5;
+    y=pdfAddLines(doc, y, [farmSettings.business_description]);
+    y+=3;
+  }
+
   // Addressed directly to the AI reading the document, not the farmer —
   // several uploads reached ChatGPT/Gemini with no message typed alongside
   // the file, so the assistant had nothing to act on and just asked what
@@ -5967,6 +5998,7 @@ async function buildAnimalSummaryPdfBlob(animalId){
   doc.text('aBC Stockman \u2014 Animal Summary', 14, y); y+=8;
   doc.setTextColor(20,20,20); doc.setFont(undefined,'normal'); doc.setFontSize(10);
   doc.text('Generated '+fmtDateTimeShort(new Date().toISOString()), 14, y); y+=10;
+  if(farmSettings.business_description){ y=pdfAddLines(doc, y, ['Farm: '+farmSettings.business_description], {size:9}); y+=2; }
 
   const breed=breeds.find(b=>b.id===a.breed_id);
   const lw=lastWeightRecord(a.id);
@@ -7285,6 +7317,7 @@ function renderTimeline(){
     </div>
     ${footerBar([
       {id:'timeline-help', icon:'help', label:'Help'},
+      {id:'timeline-export', icon:'upload', label:'Export', primary:true},
       {id:'timeline-home', icon:'home', label:'Home', home:true},
     ])}`;
 }
@@ -7405,7 +7438,7 @@ function renderAnimalDetails(){
     </div>
     ${footerBar([
       {id:'details-help', icon:'help', label:'Help'},
-      {id:'details-export', label:'Export<br>animal<br>summary', primary:true, style:'border:2px solid var(--primary-dark);'},
+      {id:'details-remove', icon:'trash', label:'Remove', danger:true},
       {id:'saveDetails', icon:'save', label:'Save', primary:true},
       {id:'details-home', icon:'home', label:'Home', home:true},
     ])}`;
@@ -8467,6 +8500,45 @@ function farmDetailRagDot(rag, size){
 }
 // Short labels for the "missing" line on a list row — drops the bracketed examples.
 function fdShortLabel(l){ return l.replace(/\s*\(.*\)\s*$/,'').toLowerCase(); }
+const FARM_BUSINESS_CHECKS=[
+  {key:'product', label:'What you produce (meat, milk, wool, breeding stock, eggs\u2026)', essential:true, re:/meat|milk|dairy|wool|breeding|eggs|beef|lamb|mutton|pork|pedigree|stud|calves|weanling|fleece|cheese|store lambs?/},
+  {key:'species', label:'Species/livestock kept', essential:true, re:/cattle|\bcows?\b|beef|sheep|\blambs?\b|\bpigs?\b|pork|poultry|chicken|\bhens?\b|goats?|horses?|deer|dairy/},
+  {key:'system', label:'System/stage (e.g. finishing, store, breeding, pedigree, commercial, organic)', essential:true, re:/finish(ing)?|\bstore\b|breed(ing)?|pedigree|commercial|organic|extensive|intensive|free.range|\brear(ing)?\b|grass.?fed|suckler|weanling|calving|lambing/},
+  {key:'scale', label:'Rough scale (e.g. number of head, acres)', essential:false, re:/\d+\s*(head|cattle|cows?|sheep|ewes|lambs|acres|hectares|ha\b)/},
+  {key:'market', label:'How you sell (e.g. auction, direct, abattoir, pedigree sales)', essential:false, re:/auction|direct|abattoir|\bmarket\b|pedigree sale|farm gate|online|butcher|processor/},
+  {key:'excludes', label:'Anything you deliberately DON\u2019T do (e.g. no dairy, no breeding)', essential:false, re:/\bno\b|\bnot\b|don\u2019t|dont|\bnone\b/},
+];
+function businessDescriptionRating(text){
+  const t=(text||'').toLowerCase();
+  const hits={}; FARM_BUSINESS_CHECKS.forEach(c=>{ hits[c.key]=c.re.test(t); });
+  const ess=FARM_BUSINESS_CHECKS.filter(c=>c.essential);
+  const essHit=ess.filter(c=>hits[c.key]).length;
+  let rag='red';
+  if(text && text.trim()){
+    if(essHit===ess.length) rag='green';
+    else if(essHit===ess.length-1) rag='amber';
+  }
+  return { rag, hits, missingEssential: ess.filter(c=>!hits[c.key]).map(c=>c.label) };
+}
+function businessDescriptionChecklistHtml(text){
+  const r=businessDescriptionRating(text);
+  const item=(c)=>{
+    const ok=r.hits[c.key];
+    return `<div style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;font-size:13.5px;color:${ok?'var(--ink)':'var(--grey)'};">
+      <span style="width:18px;flex-shrink:0;text-align:center;font-weight:800;color:${ok?'var(--green)':(c.essential?'var(--red)':'var(--grey-light)')};">${ok?'\u2713':'\u25CB'}</span>
+      <span style="flex:1;">${escapeHtml(c.label)}</span>
+    </div>`;
+  };
+  return `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+      ${farmDetailRagDot(r.rag,16)}
+      <span style="font-size:14px;font-weight:800;color:var(--${r.rag});">${FD_RAG_TEXT[r.rag]}</span>
+    </div>
+    <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:8px 0 2px;">Key details</div>
+    ${FARM_BUSINESS_CHECKS.filter(c=>c.essential).map(item).join('')}
+    <div style="font-size:11px;color:var(--grey);font-weight:800;text-transform:uppercase;margin:10px 0 2px;">Useful to add <span style="text-transform:none;font-weight:600;">(doesn\u2019t affect the rating)</span></div>
+    ${FARM_BUSINESS_CHECKS.filter(c=>!c.essential).map(item).join('')}`;
+}
 function farmDetailChecklistHtml(category, name, details){
   const def=FARM_DETAIL_TYPES[category];
   const r=farmDetailRating(category, name, details);
@@ -8788,11 +8860,18 @@ function renderSettings(){
             <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:14px;"><input type="radio" name="useAnimalNamesRadio" id="useAnimalNamesNo" ${farmSettings.use_animal_names===false?'checked':''}> No</label>
           </div></div>
 
-          <div class="formrow" style="border-bottom:none;"><label>TB testing <button class="helpcircle" id="tbTestIntervalHelp" style="margin-left:2px;">?</button></label><div class="formctrl">
+          <div class="formrow"><label>TB testing <button class="helpcircle" id="tbTestIntervalHelp" style="margin-left:2px;">?</button></label><div class="formctrl">
             <select id="tbTestIntervalSelect">
               ${TB_TEST_INTERVAL_OPTIONS.map(m=>`<option value="${m}" ${tbTestIntervalMonths()===m?'selected':''}>${m} months</option>`).join('')}
             </select>
           </div></div>
+
+          <label style="margin-top:14px;">What does the farm do? <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional \u2014 helps Insights and exports)</span></label>
+          <textarea id="farmBusinessInput" maxlength="500" style="min-height:${farmSettings.business_description?'70':'38'}px;${farmSettings.business_description?'':'overflow:hidden;'}resize:none;" oninput="autoGrowTextarea(this);document.getElementById('farmBusinessCharCount').textContent=(500-this.value.length)+' characters remaining';document.getElementById('farmBusinessChecklist').innerHTML=businessDescriptionChecklistHtml(this.value);" placeholder="e.g. Suckler-to-finish beef, some store lambs sold at 12 weeks, no dairy or breeding.">${escapeHtml(farmSettings.business_description||'')}</textarea>
+          <div id="farmBusinessCharCount" style="font-size:13px;color:var(--grey);text-align:right;margin-top:2px;">${500-(farmSettings.business_description||'').length} characters remaining</div>
+          <div id="farmBusinessChecklist" style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:8px;">
+            ${businessDescriptionChecklistHtml(farmSettings.business_description||'')}
+          </div>
         </div>`:''}
       </div>
       <div id="settingsSection-farmdetails" style="margin:8px 0;">
@@ -11278,7 +11357,7 @@ function wireView(){
         if(errBirth) errBirth.textContent='Birth date can\u2019t be in the future.';
       } else if(errBirth) errBirth.textContent='';
     });
-    document.getElementById('details-export').onclick=()=>{ runShareAnimalSummary(selectedId); };
+    document.getElementById('details-remove').onclick=()=>{ view='archive'; render(); };
     document.getElementById('saveDetails').onclick=async()=>{
       const a=animals.find(x=>x.id===selectedId);
       const tagField=document.getElementById('f-tag');
@@ -11470,6 +11549,7 @@ function wireView(){
       render();
     });
     document.getElementById('timeline-help').onclick=()=>{ showInfoModal('Tap an item to view/edit or delete that record.\nFor when you\u2019ve made a mistake and want to correct it.'); };
+    document.getElementById('timeline-export').onclick=()=>{ runShareAnimalSummary(selectedId); };
   }
   if(view==='walkthrough'){
     document.querySelector('[data-walkthroughback]').onclick=()=>{ if(!walkthroughReturnView || walkthroughReturnView==='login'){ enterPasscodeLogin(); } else { view=walkthroughReturnView; } render(); };
@@ -12316,6 +12396,14 @@ Rules:
       await persistAll(); await syncFarmSettingsToSupabase();
       logMsg('TB testing interval set to every '+farmSettings.tb_test_interval_months+' months.');
       showSaveToast('Updated');
+    };
+    const farmBusinessInput=document.getElementById('farmBusinessInput');
+    if(farmBusinessInput) farmBusinessInput.onblur=async()=>{
+      const val=farmBusinessInput.value.trim();
+      if(val===(farmSettings.business_description||'')) return;
+      farmSettings.business_description=val||null;
+      await persistAll(); await syncFarmSettingsToSupabase();
+      showSaveToast('Saved');
     };
     const tbIntervalHelpEl=document.getElementById('tbTestIntervalHelp');
     if(tbIntervalHelpEl) tbIntervalHelpEl.onclick=(e)=>{ e.stopPropagation(); showInfoModal('How often your herd has to be TB tested \u2014 this depends on your testing area (check with APHA or your vet if unsure).\n\nAn animal counts as overdue once its last recorded TB test is older than this, and Attention warns you 4 weeks before one becomes due.'); };
