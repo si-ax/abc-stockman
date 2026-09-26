@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24x';
+const APP_BUILD_VERSION = '2026-09-24y';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,15 @@ const APP_BUILD_VERSION = '2026-09-24x';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24y',
+    date: '24 Sep 2026',
+    bullets: [
+      "Scanning several passports in a row could hit Groq's free-tier rate limit and just fail outright. It now waits and retries automatically when that happens, counting down on screen, instead of stopping the whole pile of passports on whichever one happened to trip it \u2014 the underlying limit itself is Groq's, not something this can remove, but a farmer working through a stack shouldn't have to notice it.",
+      "Save & add is now Save & add new, with a green plus icon.",
+      "Add Animal now scrolls back to the top when Save & add new starts the next one, so Scan passport/tag is right there without scrolling up. If the animal just saved was itself filled in from a scan, the camera opens automatically for the next one too \u2014 for working through a pile of passports, that's paste-scan-Save&add-scan-Save&add with nothing else to tap.",
+    ]
+  },
   {
     version: '2026-09-24x',
     date: '24 Sep 2026',
@@ -2373,6 +2382,16 @@ async function callGroq(promptText, imagePart, opts){
     // clear it so the next call re-asks /models rather than repeating
     // the same dead answer indefinitely.
     if(resp.status===404 && imagePart && model===groqVisionModelCache) groqVisionModelCache=null;
+    if(resp.status===429 && !opts._retriedRateLimit){
+      const retryAfterHeader=parseInt(resp.headers.get('retry-after'),10);
+      const waitSecs=Math.min(Math.max(isNaN(retryAfterHeader)?15:retryAfterHeader, 3), 60);
+      for(let s=waitSecs; s>0; s--){
+        updateScanningOverlay('Groq asked us to slow down \u2014 retrying in '+s+'s\u2026');
+        await new Promise(r=>setTimeout(r, 1000));
+      }
+      updateScanningOverlay('Retrying\u2026');
+      return callGroq(promptText, imagePart, {...opts, _retriedRateLimit:true});
+    }
     const worthRetrying = resp.status===404 || resp.status===429 || resp.status>=500;
     if(!worthRetrying) throw lastErr;
   }
@@ -7549,7 +7568,7 @@ function renderAdd(){
     </div>
     ${footerBar([
       {id:'add-help', icon:'help', label:'Help'},
-      {id:'saveAnimalAndAdd', icon:'plus', label:'Save &<br>add'},
+      {id:'saveAnimalAndAdd', iconHtml:'<span style="color:var(--green);">'+icon('plus')+'</span>', label:'Save &<br>add new'},
       {id:'saveAnimal', icon:'save', label:'Save', primary:true},
       {id:'add-home', icon:'home', label:'Home', home:true},
     ])}`;
@@ -12285,9 +12304,12 @@ Rules:
     if(passportHelpBtn) passportHelpBtn.onclick=()=>{ showInfoModal('\u2022 Works on either a passport page or just the ear tag itself \u2014 whichever you\u2019ve got to hand.\n\n\u2022 For a bought animal\u2019s passport, photograph the page showing its own details \u2014 not the cover.\n\n\u2022 This reads the printed text, not the barcode/chip itself \u2014 make sure the printed details are in shot, in focus, and the right way up.\n\n\u2022 A tag only ever fills in EID. A passport can also fill breed, sex, D.O.B., Mgmt ID, and Mother/Father (as an off-farm reference if not one of your own animals) where they\u2019re printed and visible.\n\n\u2022 Always check what\u2019s filled in before saving \u2014 a smudged or angled photo can still misread a field.'); };
     // Fills the New Animal form from a passport-scan result — see the
     // top-level applyPassportScanResult function (also used by the
-    // resume-after-reload flow in the app boot sequence).
-    const scanPassportBtn=document.getElementById('scanPassportBtn');
-    if(scanPassportBtn) scanPassportBtn.onclick=()=>{
+    // resume-after-reload flow in the app boot sequence). Named and
+    // attached to the render scope (not just the button's onclick) so
+    // Save & add new can also launch it directly for the next animal,
+    // without the farmer having to tap Scan passport/tag again — see
+    // saveAnimalAndAdd below.
+    const launchPassportScan=()=>{
       if(!(farmSettings.use_ai===true && farmSettings.groq_api_key)){
         showInfoModal('Scanning a passport needs AI turned on with a Groq API key set up in Settings \u2014 unlike tag scanning, there\u2019s no offline fallback for reading several fields off a document.', 'useai');
         return;
@@ -12321,6 +12343,8 @@ Rules:
         }
       });
     };
+    const scanPassportBtn=document.getElementById('scanPassportBtn');
+    if(scanPassportBtn) scanPassportBtn.onclick=launchPassportScan;
     wirePhotoCaptureModal('photo', (dataUrl)=>{ newAnimalPhoto=dataUrl; updatePhotoPreview('photo', dataUrl); });
     document.getElementById('pickMother').onclick=()=>{ modal={type:'editEid', current:'', context:'parent', role:'mother', parentContext:'new'}; renderModal(); };
     document.getElementById('pickFather').onclick=()=>{ modal={type:'editEid', current:'', context:'parent', role:'father', parentContext:'new'}; renderModal(); };
@@ -12399,11 +12423,16 @@ Rules:
       showSaveToast('Saved');
     };
     document.getElementById('saveAnimalAndAdd').onclick=async()=>{
+      const wasFromScan=newAnimalPassportScanned;
       const saved=await saveNewAnimalFromForm();
       if(!saved) return;
       newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null;
       newAnimalPassportScanned=false;
       render();
+      // Land back at the top rather than wherever the page happened to be
+      // scrolled to — the whole point of this button is a quick next
+      // animal, and Scan passport/tag is the first thing up there.
+      window.scrollTo(0,0);
       // Breed, Sex and D.O.B. carry over — a batch registered together
       // (a litter, a group born the same week) usually shares all three,
       // so re-typing them for every single animal would be exactly the
@@ -12413,8 +12442,17 @@ Rules:
       const breedEl=document.getElementById('f-breed'); if(breedEl) breedEl.value=saved.breedId;
       const sexEl=document.getElementById(saved.sex==='F'?'sexF':'sexM'); if(sexEl) sexEl.checked=true;
       const birthEl=document.getElementById('f-birth'); if(birthEl) birthEl.value=saved.birthRaw;
-      const tagEl=document.getElementById('f-tag'); if(tagEl) tagEl.focus();
-      showSaveToast('Saved \u2014 add another');
+      if(wasFromScan){
+        // The animal just saved was itself filled in from a scan — for a
+        // pile of passports that's the normal case for every one of them,
+        // so the camera opens straight away instead of making the farmer
+        // tap Scan passport/tag again for every single animal.
+        showSaveToast('Saved \u2014 scanning next\u2026');
+        launchPassportScan();
+      } else {
+        const tagEl=document.getElementById('f-tag'); if(tagEl) tagEl.focus();
+        showSaveToast('Saved \u2014 add another');
+      }
     };
   }
   if(view==='settings'){
