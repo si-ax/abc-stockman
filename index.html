@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24y';
+const APP_BUILD_VERSION = '2026-09-24z';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-24y';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24z',
+    date: '24 Sep 2026',
+    bullets: [
+      "Fixed a real bug: once one animal in a Save & add new run was a cross-bred, every animal after it got marked as a cross too, even a straight-bred one read straight off its own passport. A passport scan now always sets Cross-bred definitively (on or off) from what it actually reads, instead of only ever turning it on and leaving it stuck once it had been.",
+    ]
+  },
   {
     version: '2026-09-24y',
     date: '24 Sep 2026',
@@ -9672,12 +9679,10 @@ function applyPassportScanResult(result){
       breedSelect.value=newBreed.id;
       filled.push('Breed (added '+breedForMatching+' to Settings)');
     }
-    if(crossSuffix){
-      newAnimalIsCross=true;
-      const crossBtn=document.getElementById('breedCrossToggle');
-      if(crossBtn) crossBtn.style.color='var(--ink)';
-      filled.push('Cross-bred (X)');
-    }
+    newAnimalIsCross=!!crossSuffix;
+    const crossBtn=document.getElementById('breedCrossToggle');
+    if(crossBtn) crossBtn.style.color = crossSuffix ? 'var(--ink)' : 'var(--grey-light)';
+    if(crossSuffix) filled.push('Cross-bred (X)');
   }
   if(result.sex==='M' || result.sex==='F'){
     const radio=document.getElementById(result.sex==='M'?'sexM':'sexF');
@@ -12335,9 +12340,40 @@ Rules:
           }
         } catch(err){
           const looksLikeABug = err instanceof TypeError && /Cannot (set|read)/i.test(err.message||'');
-          showInfoModal(looksLikeABug
-            ? 'Something went wrong reading that passport \u2014 try again, and if it keeps happening, avoid navigating away while it\u2019s scanning.'
-            : friendlyAiError(err));
+          if(looksLikeABug){
+            showInfoModal('Something went wrong reading that passport \u2014 try again, and if it keeps happening, avoid navigating away while it\u2019s scanning.');
+            hideScanningOverlay();
+            return;
+          }
+          // Groq genuinely isn't available right now (quota used up for
+          // the day, key rejected, no signal) rather than the normal
+          // "slow down" case, which callGroq already waits out and
+          // retries on its own before ever reaching here. There's no
+          // realistic way to read breed/DOB/parents off a full passport
+          // page with plain on-device OCR — that needs actually
+          // understanding the layout, not just finding some digits — but
+          // the same reader already used for tag scanning can at least
+          // have a go at finding the animal's own EID on the page, so the
+          // whole scan isn't a dead loss. Only trusted when it comes back
+          // with a country-code prefix (UK/GB/XI) attached, since a bare
+          // run of digits found on a page this busy (dates, addresses,
+          // other reference numbers) is far more likely to be something
+          // else entirely.
+          updateScanningOverlay('Groq unavailable \u2014 trying the phone\u2019s basic scanner for the EID\u2026');
+          try{
+            const guess=await readEidFromPhotoTesseract(file);
+            if(guess && /^(UK|GB|XI)/.test(guess)){
+              newAnimalEid=guess;
+              const btnText=document.getElementById('enterEidBtnText');
+              if(btnText) btnText.textContent='EID: '+guess;
+              newAnimalPassportScanned=true;
+              showInfoModal('Groq wasn\u2019t available ('+friendlyAiError(err)+'), so the phone\u2019s basic scanner had a go instead \u2014 it found this EID: '+guess+'. Double-check it\u2019s right, and fill in breed, date of birth and parents from the passport by hand, since the basic scanner can\u2019t read those.');
+            } else {
+              showInfoModal('Groq wasn\u2019t available ('+friendlyAiError(err)+'), and the phone\u2019s basic scanner couldn\u2019t find a clear tag number on the page either \u2014 enter this animal\u2019s details manually for now.');
+            }
+          }catch(e2){
+            showInfoModal('Groq wasn\u2019t available ('+friendlyAiError(err)+'), and the phone\u2019s basic scanner couldn\u2019t read the photo either \u2014 enter this animal\u2019s details manually for now.');
+          }
         } finally {
           hideScanningOverlay();
         }
@@ -12427,7 +12463,7 @@ Rules:
       const saved=await saveNewAnimalFromForm();
       if(!saved) return;
       newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null;
-      newAnimalPassportScanned=false;
+      newAnimalPassportScanned=false; newAnimalIsCross=false;
       render();
       // Land back at the top rather than wherever the page happened to be
       // scrolled to — the whole point of this button is a quick next
