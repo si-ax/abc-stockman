@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24t';
+const APP_BUILD_VERSION = '2026-09-24w';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,28 @@ const APP_BUILD_VERSION = '2026-09-24t';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24w',
+    date: '24 Sep 2026',
+    bullets: [
+      "Add to Medicine Cabinet: new Scan medicine box button reads the batch number and expiry straight off a photo of the packaging, filling them in automatically. It reads the printed text (Batch/B.N., Expiry/EXP), not the 2D barcode itself \u2014 that dense square code can't be reliably decoded from a photo, but medicine boxes already print the same information in plain text right next to it for exactly this reason.",
+    ]
+  },
+  {
+    version: '2026-09-24v',
+    date: '24 Sep 2026',
+    bullets: [
+      "Expired medicine is allowed \u2014 it always was, nothing blocked it \u2014 but now says so clearly wherever it comes up: adding it to the Medicine Cabinet, giving it as a vet, or drawing an already-expired batch from the farm's own cabinet all now show a clear warning that it may breach an assurance scheme's rules (e.g. Red Tractor), instead of relying on a farmer to notice a colour change on a read-only field.",
+    ]
+  },
+  {
+    version: '2026-09-24u',
+    date: '24 Sep 2026',
+    bullets: [
+      "Mgmt ID is now optional on Add/Edit Animal, same as Name \u2014 not every farm uses one.",
+      "Add Medicine: Cost/dose is now optional when a vet is administering it \u2014 leave it blank if the bill hasn't come in yet, and it'll show up in Attention as \u201cVet medicine cost not yet added\u201d until you go back and fill it in. Fill it in straight away if the vet tells you there and then, and it never shows in Attention at all. TB testing is unaffected \u2014 still always \u00a30. Filling it in later works from the animal's own Medicine screen, where the field is now editable while a cost is missing.",
+    ]
+  },
   {
     version: '2026-09-24t',
     date: '24 Sep 2026',
@@ -2054,7 +2076,7 @@ function heartFilledIcon(bg){ return `<svg viewBox="0 0 24 24"><path d="M12 20.2
 // is enough to make that switch apply everywhere consistently.
 function animalDisplayName(a){
   if(farmSettings.use_animal_names===false) return a.eid || '(no EID)';
-  return (a.name) ? a.name : a.tag_number;
+  return a.name || a.tag_number || a.eid || '(no ID)';
 }
 // Short EID chip shown next to an animal's name — last 3 digits of the actual EID.
 // If no EID has been recorded, show a plain "…" placeholder rather than
@@ -2086,6 +2108,7 @@ function fmtGBP(amount, decimals){
 // Same as fmtGBP but drops the pence entirely when they'd just be ".00" —
 // used on screens (Market Value) that want to stay as compact as possible;
 // a farmer who genuinely prices to the penny still sees it.
+const EXPIRED_MEDICINE_WARNING='This is already out of date. Using expired medicine may breach your assurance scheme\u2019s rules (e.g. Red Tractor) \u2014 check it\u2019s still safe and permitted to use.';
 function fmtGBPSmart(amount){
   if(amount==null || isNaN(amount)) return '£\u2014';
   const rounded=Math.round(amount*100)/100;
@@ -5131,6 +5154,11 @@ function insightDetail(flagKey, a){
     if(!(b && b.note)) return '';
     return '<span style="font-size:13px;background:var(--amber);color:#fff;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap;">'+b.note+'</span>';
   }
+  if(flagKey==='pendingvetcost'){
+    const rec=medicineRecords.filter(r=>r.animal_id===a.id && r.cost==null).sort((x,y)=>new Date(y.administered_at)-new Date(x.administered_at))[0];
+    if(!rec) return '';
+    return '<span style="font-size:13px;background:var(--amber);color:#fff;font-weight:700;padding:2px 10px;border-radius:20px;white-space:nowrap;">'+escapeHtml(rec.product_name||'Vet fees')+'</span>';
+  }
   if(flagKey==='withdrawal'){
     const wd=activeWithdrawal(a.id);
     if(!wd) return '';
@@ -5201,6 +5229,9 @@ function herdFlags(){
   const inWithdrawal=active.filter(a=>medicineRecords.some(r=>r.animal_id===a.id && new Date(r.withdrawal_until)>=now))
     .sort((a,b)=>new Date(activeWithdrawal(a.id).withdrawal_until)-new Date(activeWithdrawal(b.id).withdrawal_until) || byName(a,b));
   if(inWithdrawal.length) flags.push({key:'withdrawal', label:'In medicine withdrawal', count:inWithdrawal.length, color:'red', animals:inWithdrawal});
+
+  const pendingCostAnimals=active.filter(a=>medicineRecords.some(r=>r.animal_id===a.id && r.cost==null)).sort(byName);
+  if(pendingCostAnimals.length) flags.push({key:'pendingvetcost', label:'Vet medicine cost not yet added', count:pendingCostAnimals.length, color:'amber', animals:pendingCostAnimals});
 
   const tbOverdueAnimals=active.filter(a=>tbTestOverdue(a.id)).sort(byName);
   if(tbOverdueAnimals.length) flags.push({key:'tboverdue', label:'TB test overdue or missing', count:tbOverdueAnimals.length, color:'red', animals:tbOverdueAnimals});
@@ -6994,7 +7025,7 @@ function renderHerd(){
   const term=searchTerm.toLowerCase();
   let list = animals.filter(a=>{
     if(a.status!==statusFilter) return false;
-    if(term && !(a.tag_number.toLowerCase().includes(term) || (a.name||'').toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))) return false;
+    if(term && !((a.tag_number||'').toLowerCase().includes(term) || (a.name||'').toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))) return false;
     if(filterBreedId && a.breed_id!==filterBreedId) return false;
     if(filterOffFarm){
       const lm=lastMoveForAnimal(a.id);
@@ -7395,7 +7426,7 @@ function renderAnimalDetails(){
       ${photoCaptureBlockModal('photo', photoVal, 'Click to take photo of animal')}
 
       ${farmSettings.use_animal_names===false?'':`
-      <div class="formrow"><label>Mgmt ID</label><div class="formctrl"><input type="text" id="f-tag" value="${a.tag_number.replace(/"/g,'&quot;')}"></div></div>
+      <div class="formrow"><label>Mgmt ID <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label><div class="formctrl"><input type="text" id="f-tag" value="${(a.tag_number||'').replace(/"/g,'&quot;')}"></div></div>
       <div class="field-error" id="err-tag" style="padding:0 2px;"></div>
       `}
 
@@ -7469,7 +7500,7 @@ function renderAdd(){
       <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('photo', newAnimalPhoto, 'Click to take photo of animal')}
 
-      <div class="formrow"><label>Mgmt ID</label><div class="formctrl"><input type="text" id="f-tag" placeholder="e.g. A-1101"></div></div>
+      <div class="formrow"><label>Mgmt ID <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label><div class="formctrl"><input type="text" id="f-tag" placeholder="e.g. A-1101"></div></div>
       <div class="field-error" id="err-tag" style="padding:0 2px;"></div>
 
       <div class="formrow"><label>Breed</label><div class="formctrl" style="display:flex;align-items:center;gap:8px;"><select id="f-breed" style="flex:1;">${(()=>{ const activeBreeds=sortedBreeds(breeds.filter(b=>b.active)); return (activeBreeds.length===1?'':'<option value="" selected>\u2014 Select \u2014</option>')+activeBreeds.map(b=>`<option value="${b.id}" ${activeBreeds.length===1?'selected':''}>${b.name}</option>`).join(''); })()}</select><button type="button" id="breedCrossToggle" title="Cross-bred \u2014 tap to toggle" style="width:36px;height:36px;flex-shrink:0;border-radius:8px;border:1px solid var(--line);background:#fff;font-weight:800;font-size:16px;cursor:pointer;color:${newAnimalIsCross?'var(--ink)':'var(--grey-light)'};">X</button></div></div>
@@ -7523,7 +7554,7 @@ function renderWeigh(){
 
   if(!a){
     const term=weighInlineSearchTerm.toLowerCase();
-    const activeAnimals=animals.filter(x=>x.status==='active' && (!term || (x.name||'').toLowerCase().includes(term) || x.tag_number.toLowerCase().includes(term) || (x.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(x.breed_id).toLowerCase().includes(term))).sort((x,y)=>(animalDisplayName(x)).localeCompare(animalDisplayName(y)));
+    const activeAnimals=animals.filter(x=>x.status==='active' && (!term || (x.name||'').toLowerCase().includes(term) || (x.tag_number||'').toLowerCase().includes(term) || (x.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(x.breed_id).toLowerCase().includes(term))).sort((x,y)=>(animalDisplayName(x)).localeCompare(animalDisplayName(y)));
     return `
       <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>Weigh / BCS</span><span></span></div>
       <div class="body">
@@ -7971,7 +8002,10 @@ function renderMedicine(){
           <div class="formrow compact"><label>Animal weight</label><div class="formctrl"><input type="text" value="${r.animal_weight_kg?r.animal_weight_kg+'kg':''}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
           <div class="formrow compact"><label>Dosage given</label><div class="formctrl"><input type="text" value="${r.dosage_amount?r.dosage_amount+' '+(r.dosage_unit||''):''}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
           <div class="formrow compact"><label>Withdrawal date</label><div class="formctrl"><input type="text" value="${r.withdrawal_until?fmtDate(r.withdrawal_until):'None'}" readonly style="background:${isActive?'var(--red-bg)':'#f3f3f3'};color:${isActive?'var(--red)':'var(--grey)'};font-weight:${isActive?'700':'400'};"></div></div>
-          <div class="formrow compact"><label>Cost/dose</label><div class="formctrl"><input type="text" value="${r.cost!=null?fmtGBP(r.cost):fmtGBP(0)}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
+          <div class="formrow compact"><label>Cost/dose</label><div class="formctrl">${r.cost!=null
+            ? `<input type="text" value="${fmtGBP(r.cost)}" readonly style="background:#f3f3f3;color:var(--grey);">`
+            : `<input type="text" inputmode="decimal" data-medcostinput="${r.id}" placeholder="Enter once billed" style="border-color:var(--amber);">`}</div></div>
+          ${r.cost==null?`<div style="font-size:12.5px;color:var(--amber);margin:-4px 0 8px;padding:0 2px;">Waiting on the vet\u2019s bill \u2014 shown in Attention until this is filled in.</div>`:''}
           ${(r.reason==='injury' && r.injury_id && injuryRecords.some(x=>x.id===r.injury_id)) ? `
           <div class="formrow compact"><label>Reason</label><div class="formctrl"><button data-gotoinjuryrecord="${r.injury_id}" style="width:100%;text-align:left;background:#f3f3f3;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:15px;color:var(--link);font-weight:700;text-decoration:underline;cursor:pointer;">${escapeHtml(medReasonLabel(r.reason))}${(r.reason==='injury' && injuryRecords.some(x=>x.id===r.injury_id))?' ('+bodyPartLabel(injuryRecords.find(x=>x.id===r.injury_id).body_part)+')':''}</button></div></div>
           ` : `
@@ -8085,7 +8119,9 @@ function renderMedicineAdd(){
       </div></div>
 
       <div class="formrow" id="med-expiry-vet-row"><label>Expiry date</label><div class="formctrl">${dateFieldWithJump(`<input type="date" id="med-expirydate" style="flex:1;min-width:0;">`,'med-expirydate')}</div></div>
+      <div id="med-expiredwarning-vet" style="display:none;font-size:13px;color:var(--red);font-weight:700;background:var(--red-bg);border-radius:8px;padding:8px 10px;margin:-6px 0 10px;">\u26a0 ${EXPIRED_MEDICINE_WARNING}</div>
       <div class="formrow" id="med-expiry-farmer-row" style="display:none;"><label>Expiry date</label><div class="formctrl"><input type="text" id="med-expirydate-farmer-display" readonly value="\u2014" style="background:#f3f3f3;color:var(--grey);"></div></div>
+      <div id="med-expiredwarning-farmer" style="display:none;font-size:13px;color:var(--red);font-weight:700;background:var(--red-bg);border-radius:8px;padding:8px 10px;margin:-6px 0 10px;">\u26a0 ${EXPIRED_MEDICINE_WARNING}</div>
 
       <div id="med-photo-row" style="display:none;">
         <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
@@ -8109,7 +8145,7 @@ function renderMedicineAdd(){
 
       <div class="formrow"><label>Method given</label><div class="formctrl"><select id="med-method"><option value="" selected>\u2014 Select \u2014</option><option value="Injection">Injection</option><option value="Intramammary">Intramammary</option><option value="Intranasal">Intranasal</option><option value="Oral">Oral</option><option value="Topical">Topical</option><option value="Other">Other</option></select></div></div>
 
-      <div class="formrow" id="med-cost-vet-row"><label>Cost/dose <button class="helpcircle" id="med-costhelp" style="margin-left:4px;">?</button></label><div class="formctrl withunit"><span>&pound;</span><input type="text" inputmode="decimal" id="med-cost"></div></div>
+      <div class="formrow" id="med-cost-vet-row"><label>Cost/dose <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional \u2014 leave blank until the vet bills you)</span> <button class="helpcircle" id="med-costhelp" style="margin-left:4px;">?</button></label><div class="formctrl withunit"><span>&pound;</span><input type="text" inputmode="decimal" id="med-cost" placeholder="Leave blank if not yet known"></div></div>
       <div class="formrow" id="med-cost-farmer-row" style="display:none;"><label>Cost/dose</label><div class="formctrl withunit"><span>&pound;</span><input type="text" id="med-cost-farmer-display" readonly value="0.00" style="background:#f3f3f3;color:var(--grey);"></div></div>
       <div class="field-error" id="err-medcost" style="padding:0 2px;"></div>
     </div>
@@ -8136,6 +8172,7 @@ function renderMedCabinetAdd(){
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>${title}</span><span></span></div>
     <div class="body">
+      ${readOnly?'':`<button class="eidbtn" id="scanMedicineBoxBtn">${icon('camera')}<span>Scan medicine box</span></button>`}
       <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('medcabphoto', medCabAddPhoto, 'Click to take photo of medicine')}
 
@@ -8148,6 +8185,7 @@ function renderMedCabinetAdd(){
       <div class="formrow"><label>Batch No.</label><div class="formctrl"><input type="text" id="medcab-batchno" placeholder="e.g. B4471" value="${escapeHtml(m.batch_no||'')}" ${ro} style="${roStyle}"></div></div>
 
       <div class="formrow"><label>Expiry date</label><div class="formctrl">${dateFieldWithJump(`<input type="date" id="medcab-expirydate" style="flex:1;min-width:0;" value="${m.expiry_date||''}" ${ro} ${readOnly?'':''}>`,'medcab-expirydate')}</div></div>
+      <div id="medcab-expiredwarning" style="display:${(m.expiry_date && m.expiry_date<todayStr())?'block':'none'};font-size:13px;color:var(--red);font-weight:700;background:var(--red-bg);border-radius:8px;padding:8px 10px;margin:-6px 0 10px;">\u26a0 ${EXPIRED_MEDICINE_WARNING}</div>
 
       <div class="formrow"><label>Size/Qty</label><div class="formctrl" style="display:flex;gap:6px;">
         <input type="text" inputmode="decimal" id="medcab-qtysize" placeholder="Amount" style="flex:1;${roStyle}" value="${m.qty_size!=null?m.qty_size:''}" ${ro}>
@@ -9377,6 +9415,28 @@ async function readEidFromPhotoGroq(file, statusEl){
 // just OCR, so unlike tag scanning there's no offline Tesseract fallback:
 // without a Groq key this feature just isn't available, and the caller
 // says so up front.
+function lastDayOfMonth(year, month){ return new Date(year, month, 0).getDate(); } // month is 1-12
+async function readMedicineBoxFromPhotoGroq(file){
+  if(!farmSettings.groq_api_key) throw new Error('No Groq key configured');
+  updateScanningOverlay('Reading medicine box\u2026');
+  const base64=await new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result.split(',')[1]);
+    reader.onerror=()=>reject(new Error('image read failed'));
+    reader.readAsDataURL(file);
+  });
+  const prompt='This is a photo of a veterinary medicine box or label. It may have a 2D barcode (a dense black-and-white square pattern, e.g. a GS1 DataMatrix) printed on it \u2014 IGNORE that barcode entirely, do not attempt to decode it. Instead read the PLAIN PRINTED TEXT elsewhere on the label, which typically includes a batch/lot number (labelled B.N., Batch, or Lot) and an expiry date (labelled EXP, Expiry, or Use By), often alongside a manufacture date (D.O.M.) \u2014 the same information the barcode encodes is normally also printed as text for exactly this reason. The expiry is often printed as just a month and year (e.g. "APR-2026" or "04/2026") with no specific day \u2014 that is normal, leave day null rather than guessing one. Reply with ONLY a single JSON object and nothing else \u2014 no markdown fences, no explanation: {"product_name":"the medicine\u2019s brand name as printed, or null","batch_no":"the batch/lot number as printed, or null","expiry_year":YYYY or null,"expiry_month":1-12 or null,"expiry_day":1-31 or null if only a month/year is shown}. Use null for anything not actually legible rather than guessing.';
+  const text=await callGroq(prompt, {mediaType:file.type||'image/jpeg', base64}, {json:true, maxTokens:300});
+  let raw;
+  try{ raw=parseAiJson(text); }
+  catch(parseErr){ throw new Error('Groq reply couldn\u2019t be read as data: \u201c'+text.slice(0,120)+'\u201d'); }
+  let expiryDate=null;
+  if(raw.expiry_year && raw.expiry_month){
+    const day = raw.expiry_day || lastDayOfMonth(raw.expiry_year, raw.expiry_month);
+    expiryDate = raw.expiry_year+'-'+String(raw.expiry_month).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+  }
+  return { productName: raw.product_name||null, batchNo: raw.batch_no||null, expiryDate, expiryWasMonthOnly: !!(raw.expiry_year && raw.expiry_month && !raw.expiry_day) };
+}
 async function readAnimalFromPassportGroq(file){
   if(!farmSettings.groq_api_key) throw new Error('No Groq key configured');
   updateScanningOverlay('Reading passport\u2026');
@@ -9832,7 +9892,7 @@ function renderModal(){
   }
   if(modal.type==='medBulkPickAnimal'){
     const term=(modal.term||'').toLowerCase();
-    const activeAnimals=animals.filter(a=>a.status==='active' && (!term || (a.name||'').toLowerCase().includes(term) || a.tag_number.toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
+    const activeAnimals=animals.filter(a=>a.status==='active' && (!term || (a.name||'').toLowerCase().includes(term) || (a.tag_number||'').toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
     div.innerHTML=`<div class="modal" style="max-height:80vh;overflow-y:auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <h3 style="margin:0;">Select next animal</h3>
@@ -9902,7 +9962,7 @@ function renderModal(){
   }
   if(modal.type==='weighPickAnimal'){
     const term=(modal.term||'').toLowerCase();
-    const activeAnimals=animals.filter(a=>a.status==='active' && (!term || (a.name||'').toLowerCase().includes(term) || a.tag_number.toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
+    const activeAnimals=animals.filter(a=>a.status==='active' && (!term || (a.name||'').toLowerCase().includes(term) || (a.tag_number||'').toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
     div.innerHTML=`<div class="modal" style="max-height:80vh;overflow-y:auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <h3 style="margin:0;">Select animal</h3>
@@ -9950,7 +10010,7 @@ function renderModal(){
   if(modal.type==='pickParent'){
     const term=(modal.term||'').toLowerCase();
     const wantSex = modal.role==='mother' ? 'F' : 'M';
-    const candidates=animals.filter(a=>a.sex===wantSex && (!term || (a.name||'').toLowerCase().includes(term) || a.tag_number.toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
+    const candidates=animals.filter(a=>a.sex===wantSex && (!term || (a.name||'').toLowerCase().includes(term) || (a.tag_number||'').toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
     div.innerHTML=`<div class="modal" style="max-height:80vh;overflow-y:auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <h3 style="margin:0;">Select ${modal.role==='mother'?'mother':'father'}</h3>
@@ -9970,7 +10030,7 @@ function renderModal(){
   }
   if(modal.type==='movePickAnimal'){
     const term=(modal.term||'').toLowerCase();
-    const activeAnimals=animals.filter(a=>a.status==='active' && (!term || (a.name||'').toLowerCase().includes(term) || a.tag_number.toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
+    const activeAnimals=animals.filter(a=>a.status==='active' && (!term || (a.name||'').toLowerCase().includes(term) || (a.tag_number||'').toLowerCase().includes(term) || (a.eid||'').toLowerCase().replace(/\s+/g,'').includes(term.replace(/\s+/g,'')) || breedName(a.breed_id).toLowerCase().includes(term))).sort((a,b)=>(animalDisplayName(a)).localeCompare(animalDisplayName(b)));
     div.innerHTML=`<div class="modal" style="max-height:80vh;display:flex;flex-direction:column;padding:0;">
       <div style="padding:16px 16px 8px;flex:0 0 auto;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -11373,9 +11433,8 @@ function wireView(){
       if(errEl) errEl.textContent='';
       errBirth.textContent='';
       errSex.textContent='';
-      if(tagField){
-        if(!tag){ errEl.textContent='Mgmt ID is required.'; return; }
-        if(animals.some(x=>x.id!==a.id && x.tag_number.toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return; }
+      if(tagField && tag){
+        if(animals.some(x=>x.id!==a.id && (x.tag_number||'').toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return; }
       }
       const sexChecked=document.querySelector('input[name="f-sex"]:checked');
       if(!sexChecked){ highlightFirstMissingField([['sexM','Sex']]); return; }
@@ -11517,6 +11576,14 @@ function wireView(){
         view='healthScore';
       } else if(flagKey==='withdrawal'){
         healthTarget=animalId; view='medicine';
+      } else if(flagKey==='pendingvetcost'){
+        // Pre-set what renderMedicine would otherwise decide for itself,
+        // so the record actually missing a cost is what's already open —
+        // not whatever the screen's own withdrawal-based default picks.
+        healthTarget=animalId; view='medicine';
+        expandedMedicineAnimalId=animalId;
+        expandedMedicineIds=new Set(medicineRecords.filter(r=>r.animal_id===animalId && r.cost==null).map(r=>r.id));
+        medHistoricalExpanded=true;
       } else if(flagKey==='tboverdue' || flagKey==='tbduesoon'){
         healthTarget=animalId; view='medicine';
       } else if(flagKey==='openinjury'){
@@ -12244,12 +12311,11 @@ Rules:
       const sexChecked=document.querySelector('input[name="f-sex"]:checked');
       const birthRaw=document.getElementById('f-birth').value;
       const missing=[];
-      if(!tag) missing.push('Mgmt ID');
       if(!breedId) missing.push('Breed');
       if(!sexChecked) missing.push('Sex');
       if(!birthRaw) missing.push('D.O.B');
-      if(missing.length){ highlightFirstMissingField([['f-tag','Mgmt ID'],['f-breed','Breed'],['sexM','Sex'],['f-birth','D.O.B']]); return; }
-      if(animals.some(x=>x.tag_number.toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return; }
+      if(missing.length){ highlightFirstMissingField([['f-breed','Breed'],['sexM','Sex'],['f-birth','D.O.B']]); return; }
+      if(tag && animals.some(x=>x.tag_number && (x.tag_number||'').toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return; }
       const name=document.getElementById('f-name').value.trim();
       const sex=sexChecked.value;
       const todayIso=new Date().toISOString().slice(0,10);
@@ -13442,6 +13508,24 @@ Rules:
   if(view==='medicine'){
     document.querySelector('[data-medback]').onclick=()=>{healthTarget=null; view='detail'; render();};
     document.getElementById('med-help').onclick=()=>{ showInfoModal('\u2022 Current medicines (those with a future withdrawal date) are highlighted red.\n\n\u2022 Expand to see previous medicines.\n\n\u2022 Click on the email icon to email the medicine details.\n\n\u2022 When adding medicine to an animal, you have the option to give the same to another animal after saving.'); };
+    // A cost left blank at the time (a vet's bill not in yet) is editable
+    // right here, once known — this is what clears the Attention flag,
+    // since that flag is just "any record on this animal still has
+    // cost==null", recomputed live from whatever's actually stored.
+    document.querySelectorAll('[data-medcostinput]').forEach(el=>el.onblur=async()=>{
+      const raw=el.value.trim();
+      if(!raw) return; // leave it pending — no change until they actually enter something
+      const val=parseFloat(raw);
+      if(isNaN(val) || val<0){ el.style.borderColor='var(--red)'; return; }
+      const rec=medicineRecords.find(r=>r.id===el.dataset.medcostinput);
+      if(!rec) return;
+      rec.cost=val;
+      await persistAll();
+      await syncMedicineToSupabase(rec);
+      logMsg('Added cost '+fmtGBP(val)+' to <b>'+escapeHtml(rec.product_name||'medicine record')+'</b>.');
+      render();
+      showSaveToast('Saved');
+    });
     document.querySelectorAll('[data-togglemed]').forEach(el=>el.onclick=()=>{
       const id=el.dataset.togglemed;
       const wasOpen=expandedMedicineIds.has(id);
@@ -13586,6 +13670,11 @@ Rules:
     // not carried over by the bulk-medicine flow either), so this only
     // ever blocks a value the farmer actually typed themselves.
     let currentMedMatch=null;
+    const medExpiryVetInput=document.getElementById('med-expirydate');
+    if(medExpiryVetInput) medExpiryVetInput.addEventListener('change', ()=>{
+      const w=document.getElementById('med-expiredwarning-vet');
+      if(w) w.style.display = (medExpiryVetInput.value && medExpiryVetInput.value<todayStr()) ? 'block' : 'none';
+    });
     const dosageAmountInput=document.getElementById('med-dosageamount');
     const costInput=document.getElementById('med-cost');
     const updateCostFromDosage=()=>{
@@ -13613,6 +13702,8 @@ Rules:
       const expired = medAddCurrentCabinetItem.expiry_date && medAddCurrentCabinetItem.expiry_date < todayStr();
       expiryFarmerDisplay.style.background = expired ? 'var(--red-bg)' : '#f3f3f3';
       expiryFarmerDisplay.style.color = expired ? 'var(--red)' : 'var(--grey)';
+      const w=document.getElementById('med-expiredwarning-farmer');
+      if(w) w.style.display = expired ? 'block' : 'none';
     };
     const updateCostFarmerDisplay=()=>{
       if(!medAddCurrentCabinetItem || !medAddCurrentCabinetItem.qty_size){ costFarmerDisplay.value='0.00'; return; }
@@ -13754,7 +13845,6 @@ Rules:
       if(!farmerVetIdVal) missing.push('Farmer / Vet');
       if(!productName) missing.push('Product');
       if(!reasonVal) missing.push('Reason');
-      if(isVetPath && !costRaw) missing.push('Cost/dose');
       if(isVetPath && !batchNoVal) missing.push('Batch No.');
       if(isVetPath && !expiryDateVal) missing.push('Expiry date');
       if(!dosageRawVal) missing.push('Dosage');
@@ -13762,14 +13852,21 @@ Rules:
       if(withdrawalApplies && !withdrawalRaw) missing.push('Withdrawal date');
       if(missing.length){
         highlightFirstMissingField(isVetPath
-          ? [['med-farmervet','Farmer / Vet'],['med-productname','Product'],['med-reason','Reason'],['med-cost','Cost/dose'],['med-batchno','Batch No.'],['med-expirydate','Expiry date'],['med-dosageamount','Dosage'],['med-withdrawaldate','Withdrawal date'],['med-method','Method given']]
+          ? [['med-farmervet','Farmer / Vet'],['med-productname','Product'],['med-reason','Reason'],['med-batchno','Batch No.'],['med-expirydate','Expiry date'],['med-dosageamount','Dosage'],['med-withdrawaldate','Withdrawal date'],['med-method','Method given']]
           : [['med-farmervet','Farmer / Vet'],['med-farmer-productname','Product'],['med-reason','Reason'],['med-dosageamount','Dosage'],['med-withdrawaldate','Withdrawal date'],['med-method','Method given']]);
         errEl.textContent = missing.length>1 ? 'Please fill in: '+missing.join(', ')+'.' : '';
         return;
       }
       if(withdrawalRaw && withdrawalRaw < todayStr()){ errWithdrawal.textContent='Withdrawal date must be on or after today.'; return; }
-      const costVal=parseFloat(costRaw);
-      if(isNaN(costVal) || costVal<0){ errCost.textContent='Enter a valid cost.'; return; }
+      let costVal;
+      if(tbTypeMatch){
+        costVal=0; // TB testing is unaffected by this — always free, unchanged
+      } else if(isVetPath && !costRaw){
+        costVal=null; // pending the vet's bill — flagged in Attention until filled in
+      } else {
+        costVal=parseFloat(costRaw);
+        if(isNaN(costVal) || costVal<0){ errCost.textContent='Enter a valid cost.'; return; }
+      }
       const a=animals.find(x=>x.id===healthTarget);
       const lw=lastWeightRecord(a.id);
       const dosageRaw=dosageRawVal;
@@ -13824,6 +13921,44 @@ Rules:
     wireGoKeySubmit('medcabadd-save');
     if(!readOnly) wirePhotoCaptureModal('medcabphoto', (dataUrl)=>{ medCabAddPhoto=dataUrl; updatePhotoPreview('medcabphoto', dataUrl); });
     document.getElementById('medcabadd-help').onclick=()=>{ showInfoModal(readOnly ? '\u2022 This medicine has been disposed of, so its record is read-only.\n\n\u2022 Size/Qty, cost, and remaining-at-disposal are all kept for your records.' : '\u2022 Photograph the medicine for Red Tractor proof.\n\n\u2022 Size/Qty is the total amount in this purchase \u2014 used to work out what\u2019s left as doses are given.\n\n\u2022 Cost is the total for this purchase, not per dose \u2014 cost/dose is worked out automatically when medicine is given.\n\n\u2022 Default withdrawal and dosage/kg are used to pre-fill those fields when this medicine is given to an animal.'); };
+    const scanMedicineBoxBtn=document.getElementById('scanMedicineBoxBtn');
+    if(scanMedicineBoxBtn) scanMedicineBoxBtn.onclick=()=>{
+      if(!(farmSettings.use_ai===true && farmSettings.groq_api_key)){
+        showInfoModal('Scanning a medicine box needs AI turned on with a Groq API key set up in Settings.', 'useai');
+        return;
+      }
+      triggerScanCameraCapture(async(file)=>{
+        showScanningOverlay('Reading medicine box\u2026');
+        try{
+          const result=await readMedicineBoxFromPhotoGroq(file);
+          const filled=[];
+          const nameEl=document.getElementById('medcab-name');
+          if(result.productName && nameEl && !nameEl.value.trim()){ nameEl.value=result.productName; filled.push('Product name'); }
+          if(result.batchNo){ document.getElementById('medcab-batchno').value=result.batchNo; filled.push('Batch No.'); }
+          if(result.expiryDate){
+            const expEl=document.getElementById('medcab-expirydate');
+            expEl.value=result.expiryDate;
+            expEl.dispatchEvent(new Event('change'));
+            filled.push('Expiry date'+(result.expiryWasMonthOnly?' (end of month shown)':''));
+          }
+          if(filled.length){
+            showSaveToast('Filled in from photo');
+            logMsg('Scanned medicine box \u2014 filled in: <b>'+filled.join(', ')+'</b>. Please check before saving.');
+          } else {
+            showInfoModal('Read the photo, but couldn\u2019t find a legible batch number or expiry date on it \u2014 try a clearer photo of the printed text (not just the barcode), or enter them manually.');
+          }
+        } catch(err){
+          showInfoModal(friendlyAiError(err));
+        } finally {
+          hideScanningOverlay();
+        }
+      });
+    };
+    const medcabExpiryInput=document.getElementById('medcab-expirydate');
+    if(medcabExpiryInput) medcabExpiryInput.addEventListener('change', ()=>{
+      const w=document.getElementById('medcab-expiredwarning');
+      if(w) w.style.display = (medcabExpiryInput.value && medcabExpiryInput.value<todayStr()) ? 'block' : 'none';
+    });
     const medCabAddSaveBtn=document.getElementById('medcabadd-save');
     if(medCabAddSaveBtn) medCabAddSaveBtn.onclick=async()=>{
       const errEl=document.getElementById('err-medcabadd'); errEl.textContent='';
