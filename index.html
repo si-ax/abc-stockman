@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24w';
+const APP_BUILD_VERSION = '2026-09-24x';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,14 @@ const APP_BUILD_VERSION = '2026-09-24w';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-24x',
+    date: '24 Sep 2026',
+    bullets: [
+      "Add Animal: new Save & add button next to Save \u2014 saves the animal and immediately starts a fresh one instead of going to its Details, for registering several in a row. Breed, Sex and D.O.B. carry over to the next one (handy for a batch born together); everything else clears.",
+      "Add Animal: if a scanned passport shows a breed that isn't set up yet, it's now added to Settings > Breeds automatically and selected \u2014 no prompt, no need to leave the form \u2014 since a passport is an authoritative source, not a guess to double-check.",
+    ]
+  },
   {
     version: '2026-09-24w',
     date: '24 Sep 2026',
@@ -7541,6 +7549,7 @@ function renderAdd(){
     </div>
     ${footerBar([
       {id:'add-help', icon:'help', label:'Help'},
+      {id:'saveAnimalAndAdd', icon:'plus', label:'Save &<br>add'},
       {id:'saveAnimal', icon:'save', label:'Save', primary:true},
       {id:'add-home', icon:'home', label:'Home', home:true},
     ])}`;
@@ -9625,6 +9634,25 @@ function applyPassportScanResult(result){
       || activeBreeds.find(b=>breedForMatching.toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(breedForMatching.toLowerCase()));
     const breedSelect=document.getElementById('f-breed');
     if(match && breedSelect){ breedSelect.value=match.id; filled.push('Breed'); }
+    else if(breedForMatching && breedSelect){
+      // Not on this farm's breed list yet — the passport is an
+      // authoritative source for what the animal actually is, so it's
+      // added to Settings > Breeds automatically (same as adding one by
+      // hand there) rather than making the farmer stop, go add it
+      // themselves, then come back and rescan or re-pick it. No
+      // confirmation needed for the same reason a scanned EID doesn't ask
+      // for one: this came off an official document, not a guess.
+      const newBreed={id:uuid(), species:'cattle', name:breedForMatching, min_prime_months:18, max_prime_months:30, active:true};
+      breeds.push(newBreed);
+      persistAll();
+      syncBreedToSupabase(newBreed);
+      logMsg('Added new breed <b>'+escapeHtml(breedForMatching)+'</b> from a scanned passport.');
+      const opt=document.createElement('option');
+      opt.value=newBreed.id; opt.textContent=newBreed.name;
+      breedSelect.appendChild(opt);
+      breedSelect.value=newBreed.id;
+      filled.push('Breed (added '+breedForMatching+' to Settings)');
+    }
     if(crossSuffix){
       newAnimalIsCross=true;
       const crossBtn=document.getElementById('breedCrossToggle');
@@ -12300,7 +12328,11 @@ Rules:
     document.getElementById('add-help').onclick=()=>{ showInfoModal('\u2022 Add births or bought animals. Add purchase price for bought animals for ROI (Return on Investment).\n\n\u2022 Breed and date of birth (D.O.B.) are used to calculate value and recommendations on when to sell.\n\n\u2022 Mgmt Id is the local id you use for the animals, in addition to the EID tag.'); };
     wireGoKeySubmit('saveAnimal');
 
-    document.getElementById('saveAnimal').onclick=async()=>{
+    // Shared by Save and Save & add — the only difference between them is
+    // what happens once the animal is actually saved (see the two thin
+    // onclick handlers below), not any of the validation or save logic
+    // itself.
+    const saveNewAnimalFromForm=async()=>{
       const tag=document.getElementById('f-tag').value.trim();
       const errEl=document.getElementById('err-tag');
       const errBirth=document.getElementById('err-birth');
@@ -12314,12 +12346,12 @@ Rules:
       if(!breedId) missing.push('Breed');
       if(!sexChecked) missing.push('Sex');
       if(!birthRaw) missing.push('D.O.B');
-      if(missing.length){ highlightFirstMissingField([['f-breed','Breed'],['sexM','Sex'],['f-birth','D.O.B']]); return; }
-      if(tag && animals.some(x=>x.tag_number && (x.tag_number||'').toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return; }
+      if(missing.length){ highlightFirstMissingField([['f-breed','Breed'],['sexM','Sex'],['f-birth','D.O.B']]); return null; }
+      if(tag && animals.some(x=>x.tag_number && (x.tag_number||'').toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return null; }
       const name=document.getElementById('f-name').value.trim();
       const sex=sexChecked.value;
       const todayIso=new Date().toISOString().slice(0,10);
-      if(birthRaw > todayIso){ errBirth.textContent='Birth date can’t be in the future.'; return; }
+      if(birthRaw > todayIso){ errBirth.textContent='Birth date can’t be in the future.'; return null; }
       const birthDateIso = new Date(birthRaw).toISOString();
       const priceRaw=document.getElementById('f-purchaseprice').value;
       const purchasePrice = priceRaw ? parseFloat(priceRaw) : null;
@@ -12346,7 +12378,7 @@ Rules:
         const { error: insertErr } = await sb.from('animals').insert({ ...newAnimal, farm_id: authFarmId });
         if(insertErr){
           errEl.textContent='Couldn\u2019t save to the farm database (check you have a signal, then try again) \u2014 '+insertErr.message;
-          return;
+          return null;
         }
       }
       animals.push(newAnimal);
@@ -12356,10 +12388,33 @@ Rules:
       await syncAnimalEventToSupabase(id, createdEvent);
       logMsg('Added new animal <b>'+(name||tag)+'</b>'+(authFarmId?' (saved to the shared farm database).':' (saved locally).'));
       try{ localStorage.removeItem(LS_PREFIX+'pendingPassportScan'); }catch(e){ /* best-effort only */ }
+      return {id, name, tag, breedId, sex, birthRaw};
+    };
+    document.getElementById('saveAnimal').onclick=async()=>{
+      const saved=await saveNewAnimalFromForm();
+      if(!saved) return;
       newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null;
       newAnimalPassportScanned=false;
-      selectedId=id; view='detail'; render();
+      selectedId=saved.id; view='detail'; render();
       showSaveToast('Saved');
+    };
+    document.getElementById('saveAnimalAndAdd').onclick=async()=>{
+      const saved=await saveNewAnimalFromForm();
+      if(!saved) return;
+      newAnimalEid=null; newAnimalMotherId=null; newAnimalMotherExternalEid=null; newAnimalFatherId=null; newAnimalFatherExternalEid=null; newAnimalPhoto=null;
+      newAnimalPassportScanned=false;
+      render();
+      // Breed, Sex and D.O.B. carry over — a batch registered together
+      // (a litter, a group born the same week) usually shares all three,
+      // so re-typing them for every single animal would be exactly the
+      // busywork this button exists to avoid. Everything that actually
+      // distinguishes one animal from the next (Mgmt ID, name, EID,
+      // parents, weights, price, notes, photo) starts blank as normal.
+      const breedEl=document.getElementById('f-breed'); if(breedEl) breedEl.value=saved.breedId;
+      const sexEl=document.getElementById(saved.sex==='F'?'sexF':'sexM'); if(sexEl) sexEl.checked=true;
+      const birthEl=document.getElementById('f-birth'); if(birthEl) birthEl.value=saved.birthRaw;
+      const tagEl=document.getElementById('f-tag'); if(tagEl) tagEl.focus();
+      showSaveToast('Saved \u2014 add another');
     };
   }
   if(view==='settings'){
