@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-26c';
+const APP_BUILD_VERSION = '2026-09-26d';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,14 @@ const APP_BUILD_VERSION = '2026-09-26c';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-26d',
+    date: '26 Sep 2026',
+    bullets: [
+      "Settings > Farm details > Fields: new Import from Rural Payments button \u2014 reads the parcel export from ruralpayments.service.gov.uk (parcel ID, size, land cover, BPS-eligible area) straight in, instead of typing every field up individually. Shows a total/breakdown, with View list, Re-import and Remove. The individual field write-ups (soil, drainage, hedges, schemes) are unchanged and stay optional, for whichever fields you want extra detail on.",
+      "Export farm summary now includes a Land parcels section sourced from that import \u2014 totals, cover breakdown, and the full parcel list.",
+    ]
+  },
   {
     version: '2026-09-26c',
     date: '26 Sep 2026',
@@ -2629,6 +2637,16 @@ let settingsOpenSection=null, settingsShowAddForm=false;
 // is open, and the add/edit draft if the form's showing. The draft holds the
 // typed text so a background re-render (periodic sync) can't wipe it.
 let farmDetailsOpenCat=null, farmDetailEdit=null; // farmDetailEdit: {id|null, category, name, details}
+// Imported once from the farmer's own Rural Payments (ruralpayments.service.gov.uk)
+// land parcel export, rather than typing every field in by hand as a Farm
+// detail — that export is the government's own authoritative parcel list
+// (id, area, land cover, BPS-eligible area), re-typing it would just be
+// duplicate data entry for something the farmer already has on file
+// elsewhere. Re-importing (a fresh export from the site) replaces the
+// whole list outright, same as any other "current state" import in this
+// app — there's no per-parcel edit UI, since the source of truth is the
+// government site, not this app.
+let landParcels=[], landParcelsImportedAt=null, landParcelsSourceFilename=null, landParcelsListExpanded=false, landParcelsImportBusy=false;
 let importFile=null, importBusy=false, importError='';
 let backupRestoreFile=null, backupRestoreBusy=false, backupRestoreError='', backupRestoreOpen=false;
 let usingFeed=true, usingFeedLog=[];
@@ -2982,6 +3000,10 @@ async function loadAll(){
     try{ knownFarmCodes= kfc?JSON.parse(kfc):[]; }catch(e){ knownFarmCodes=[]; }
     const fdl=await safeGet('local:farmdetails');
     farmDetails= fdl?JSON.parse(fdl):[];
+    const lp=await safeGet('local:landparcels');
+    try{ landParcels= lp?JSON.parse(lp):[]; }catch(e){ landParcels=[]; }
+    landParcelsImportedAt=(await safeGet('local:landparcelsimportedat'))||null;
+    landParcelsSourceFilename=(await safeGet('local:landparcelssourcefilename'))||null;
   }
 }
 // ---------- farm data import (Settings > Import farm data) ----------
@@ -3056,6 +3078,89 @@ function exportFarmDataXlsx(){
 
   const stamp=new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, 'aBC_Stockman_Export_'+stamp+'.xlsx');
+}
+// ---------- Land parcels import (Settings > Farm details > Fields) ----------
+// Reads the farmer's own land parcel export from the Rural Payments
+// service (ruralpayments.service.gov.uk) — a spreadsheet of every
+// registered parcel with its size, land cover, and BPS-eligible area —
+// rather than asking them to type up to 70+ fields in one at a time as
+// individual Farm details. Government exports name their one sheet
+// differently between farms/years, so every sheet is checked for a
+// header that looks like this export rather than assuming a fixed sheet
+// name; likewise columns are matched by header text, not position, so a
+// reordered or slightly renamed column (a future export version) doesn't
+// silently misfile data into the wrong field.
+async function parseLandParcelsFile(file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, {type:'array', cellDates:true});
+  let rows=null;
+  for(const name of wb.SheetNames){
+    const ws=wb.Sheets[name];
+    const r=XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:true});
+    if(r && r.length && Array.isArray(r[0]) && r[0].some(h=>String(h||'').toLowerCase().includes('parcel'))){ rows=r; break; }
+  }
+  if(!rows) throw new Error('Couldn\u2019t find a parcel list in that file \u2014 make sure it\u2019s the land parcel export from Rural Payments (ruralpayments.service.gov.uk).');
+  const header=rows[0].map(h=>String(h||'').trim().toLowerCase());
+  const colIdx=(re)=>header.findIndex(h=>re.test(h));
+  const parcelIdx=colIdx(/parcel/);
+  const totalAreaIdx=colIdx(/total area/);
+  const coverIdx=colIdx(/cover/);
+  const bpsAreaIdx=colIdx(/bps/);
+  if(parcelIdx<0 || totalAreaIdx<0) throw new Error('That doesn\u2019t look like a Rural Payments parcel export \u2014 couldn\u2019t find a parcel ID and area column.');
+  const toNum=(v)=>{
+    if(v==null) return null;
+    if(typeof v==='number') return v;
+    const s=String(v).trim();
+    if(!s || s==='-') return null;
+    const n=parseFloat(s.replace(/,/g,''));
+    return isNaN(n)?null:n;
+  };
+  const parsed=[];
+  rows.slice(1).forEach(row=>{
+    if(!row || row[parcelIdx]==null || String(row[parcelIdx]).trim()==='') return;
+    parsed.push({
+      parcel_id: String(row[parcelIdx]).trim(),
+      area_ha: toNum(row[totalAreaIdx]),
+      eligible_cover: coverIdx>=0 && row[coverIdx]!=null ? String(row[coverIdx]).trim() : null,
+      bps_eligible_area_ha: bpsAreaIdx>=0 ? toNum(row[bpsAreaIdx]) : null,
+    });
+  });
+  if(!parsed.length) throw new Error('No parcel rows found in that file.');
+  return parsed;
+}
+function landParcelsTotals(){
+  const totalArea=landParcels.reduce((s,p)=>s+(p.area_ha||0),0);
+  const bpsArea=landParcels.reduce((s,p)=>s+(p.bps_eligible_area_ha||0),0);
+  return {count:landParcels.length, totalArea:Math.round(totalArea*100)/100, bpsArea:Math.round(bpsArea*100)/100};
+}
+function landParcelsBreakdown(){
+  const byType={};
+  landParcels.forEach(p=>{
+    const key=p.eligible_cover||'Unspecified';
+    if(!byType[key]) byType[key]={count:0, area:0};
+    byType[key].count++;
+    byType[key].area+=(p.area_ha||0);
+  });
+  return Object.entries(byType).map(([cover,v])=>({cover, count:v.count, area:Math.round(v.area*100)/100})).sort((a,b)=>b.area-a.area);
+}
+async function runLandParcelsImport(file){
+  landParcelsImportBusy=true; render();
+  try{
+    const parsed=await parseLandParcelsFile(file);
+    landParcels=parsed;
+    landParcelsImportedAt=new Date().toISOString();
+    landParcelsSourceFilename=file.name;
+    landParcelsListExpanded=false;
+    await persistAll();
+    logMsg('Imported <b>'+parsed.length+'</b> land parcels from Rural Payments ('+escapeHtml(file.name)+').');
+    landParcelsImportBusy=false;
+    render();
+    showSaveToast('Imported');
+  }catch(e){
+    landParcelsImportBusy=false;
+    render();
+    showInfoModal('Couldn\u2019t import that file: '+((e&&e.message)||String(e)));
+  }
 }
 async function runFarmDataImport(){
   if(!importFile) return;
@@ -3322,6 +3427,9 @@ async function persistAll(){
   await safeSet('local:breedingrecords', JSON.stringify(breedingRecords));
   await safeSet('local:breedpricehistory', JSON.stringify(breedPriceHistory));
   await safeSet('local:farmdetails', JSON.stringify(farmDetails));
+  await safeSet('local:landparcels', JSON.stringify(landParcels));
+  await safeSet('local:landparcelsimportedat', landParcelsImportedAt||'');
+  await safeSet('local:landparcelssourcefilename', landParcelsSourceFilename||'');
   await safeSet('local:knownfarmcodes', JSON.stringify(knownFarmCodes));
   await safeSet('local:farmopportunities', JSON.stringify(farmOpportunitiesLatest));
   await safeSet('local:devicefarmcode', deviceFarmCode||'');
@@ -3351,6 +3459,7 @@ function backupSnapshot(){
       injuryRecords, farmSettings, damageRecords, moveRecords, farmersVets,
       usingFeed, usingFeedLog, feedLocation, feedLocationLog,
       breedingRecords, breedPriceHistory, farmDetails,
+      landParcels, landParcelsImportedAt, landParcelsSourceFilename,
       deviceFarmCode, deviceFarmName, currentFarmerId, currentFarmerName,
     },
   };
@@ -3379,6 +3488,7 @@ async function restoreFullBackup(parsed){
   usingFeed=d.usingFeed!==undefined?d.usingFeed:true; usingFeedLog=d.usingFeedLog||[];
   feedLocation=d.feedLocation||'barn'; feedLocationLog=d.feedLocationLog||[];
   breedingRecords=d.breedingRecords||[]; breedPriceHistory=d.breedPriceHistory||[]; farmDetails=d.farmDetails||[];
+  landParcels=d.landParcels||[]; landParcelsImportedAt=d.landParcelsImportedAt||null; landParcelsSourceFilename=d.landParcelsSourceFilename||null;
   deviceFarmCode=d.deviceFarmCode||null; deviceFarmName=d.deviceFarmName||null;
   currentFarmerId=d.currentFarmerId||null; currentFarmerName=d.currentFarmerName||null;
   ensureTbTestMedicineType();
@@ -6081,6 +6191,21 @@ async function buildFarmSummaryPdfBlob(){
     'Realised profit/loss: \u00a3'+(s.realised_profit_loss_gbp!=null?s.realised_profit_loss_gbp:'\u2014'),
     'Fodder cost: \u00a3'+(c.fodder_gbp!=null?c.fodder_gbp:'\u2014')+(c.fodder_types&&c.fodder_types.length?' ('+c.fodder_types.join(', ')+')':''),
   ]);
+
+  y=pdfAddHeading(doc, y, 'Land parcels (from Rural Payments)');
+  if(landParcels.length){
+    const lpt=landParcelsTotals();
+    const lpBreakdown=landParcelsBreakdown();
+    y=pdfAddLines(doc, y, [
+      'Imported '+fmtDate(landParcelsImportedAt)+' \u2014 '+lpt.count+' parcels, '+lpt.totalArea+' ha total'+(lpt.bpsArea?', '+lpt.bpsArea+' ha BPS-eligible':'')+'.',
+      'By land cover: '+lpBreakdown.map(b=>b.cover+': '+b.count+' parcels, '+b.area+' ha').join('; ')+'.',
+    ]);
+    y=pdfAddLines(doc, y, landParcels.slice().sort((a,b)=>a.parcel_id.localeCompare(b.parcel_id, undefined, {numeric:true})).map(p=>
+      p.parcel_id+': '+(p.area_ha!=null?p.area_ha+'ha':'\u2014')+(p.eligible_cover?', '+p.eligible_cover:'')+(p.bps_eligible_area_ha!=null?', BPS eligible '+p.bps_eligible_area_ha+'ha':'')
+    ), {size:8});
+  } else {
+    y=pdfAddLines(doc, y, ['Not imported yet \u2014 see Settings > Farm details > Fields in the app to import the parcel list from Rural Payments (ruralpayments.service.gov.uk).']);
+  }
 
   y=pdfAddHeading(doc, y, 'Farm details (fields, buildings, machinery, other)');
   if(farmDetails.length){
@@ -8928,6 +9053,51 @@ function renderSettings(){
       <input type="text" id="newFarmerVetName" placeholder="e.g. Dr. Smith">
     </div>`;
 
+// Shown at the top of the Fields panel in Farm details, above the list of
+// individually-described fields — importing here means a farmer with 70+
+// registered parcels never has to type each one in as its own Farm detail
+// just to get its size/land-cover on record; that already exists on Rural
+// Payments. Detailed narrative entries (soil, drainage, hedges, schemes)
+// stay exactly as before for whichever fields the farmer wants to add
+// that to, entirely separate from the imported list.
+function landParcelsSummaryHtml(){
+  if(landParcelsImportBusy){
+    return `<div style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;text-align:center;font-size:13.5px;color:var(--grey);">Reading file\u2026</div>`;
+  }
+  if(!landParcels.length){
+    return `<div style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;">
+      <div style="font-size:13.5px;color:var(--ink);margin-bottom:10px;">Got a lot of fields registered with the Rural Payments Agency? Import that list instead of typing each one in below \u2014 gets every parcel\u2019s ID, size and land cover onto the farm summary export in one go.</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button id="landParcelsImportBtn" class="eidbtn">${icon('upload')}<span>Import from Rural Payments</span></button>
+        <button class="helpcircle" id="landParcelsHelp">?</button>
+      </div>
+      <input type="file" id="landParcelsFileInput" accept=".xlsx,.xls,.csv" style="display:none;">
+    </div>`;
+  }
+  const t=landParcelsTotals();
+  const breakdown=landParcelsBreakdown();
+  return `<div style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+      <div style="font-size:14px;font-weight:700;color:var(--ink);">${t.count} parcels from Rural Payments \u2014 ${t.totalArea} ha total${t.bpsArea?(' ('+t.bpsArea+' ha BPS-eligible)'):''}</div>
+      <button class="helpcircle" id="landParcelsHelp" style="flex-shrink:0;">?</button>
+    </div>
+    <div style="font-size:12px;color:var(--grey);margin-top:2px;">Imported ${escapeHtml(fmtDateTimeShort(landParcelsImportedAt))}${landParcelsSourceFilename?' from '+escapeHtml(landParcelsSourceFilename):''}</div>
+    ${breakdown.length?`<div style="font-size:13px;color:var(--ink);margin-top:8px;">${breakdown.map(b=>escapeHtml(b.cover)+': '+b.count+' ('+b.area+' ha)').join(' \u00b7 ')}</div>`:''}
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button id="landParcelsToggleList" class="fullbtn ghost" style="margin-top:0;flex:1;padding:8px;font-size:13px;">${landParcelsListExpanded?'Hide list':'View list'}</button>
+      <button id="landParcelsImportBtn" class="fullbtn ghost" style="margin-top:0;flex:1;padding:8px;font-size:13px;">Re-import</button>
+      <button id="landParcelsRemoveBtn" class="fullbtn danger" style="margin-top:0;flex:0 0 auto;padding:8px 12px;font-size:13px;display:flex;align-items:center;">${icon('trash')}</button>
+    </div>
+    <input type="file" id="landParcelsFileInput" accept=".xlsx,.xls,.csv" style="display:none;">
+    ${landParcelsListExpanded?`<div style="max-height:260px;overflow-y:auto;margin-top:10px;border-top:1px solid var(--line);padding-top:8px;">
+      ${landParcels.slice().sort((a,b)=>a.parcel_id.localeCompare(b.parcel_id, undefined, {numeric:true})).map(p=>`
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:3px 0;border-bottom:1px solid #eee;">
+          <span>${escapeHtml(p.parcel_id)}</span>
+          <span style="color:var(--grey);text-align:right;">${p.area_ha!=null?p.area_ha+' ha':'\u2014'}${p.eligible_cover?' \u00b7 '+escapeHtml(p.eligible_cover):''}</span>
+        </div>`).join('')}
+    </div>`:''}
+  </div>`;
+}
   const farmDetailsBody=(()=>{
     const intro=`<div style="font-size:13px;color:var(--grey);margin-bottom:10px;">Tell the app about your land and resources. Each entry is rated <span style="color:var(--red);font-weight:700;">red</span>/<span style="color:var(--amber);font-weight:700;">amber</span>/<span style="color:var(--green);font-weight:700;">green</span> for how much of the key detail it has.</div>`;
     return intro + FARM_DETAIL_CATEGORIES.map(cat=>{
@@ -8986,7 +9156,7 @@ function renderSettings(){
           <button class="helpcircle" data-fdcathelp="${cat}" title="What to include" style="margin-right:8px;background:rgba(255,255,255,.28);">?</button>
           <span style="width:20px;height:20px;flex-shrink:0;">${icon(open?'triangleDown':'triangleRight')}</span>
         </div>
-        ${open?`<div class="damagepanel">${editingHere?formHtml():(items.map(rowHtml).join('')||`<div class="empty" style="padding:8px 4px;">No ${def.label.toLowerCase()} yet \u2014 tap Add.</div>`)}</div>`:''}
+        ${open?`<div class="damagepanel">${cat==='field' && !editingHere?landParcelsSummaryHtml():''}${editingHere?formHtml():(items.map(rowHtml).join('')||`<div class="empty" style="padding:8px 4px;">No ${def.label.toLowerCase()} yet \u2014 tap Add.</div>`)}</div>`:''}
       </div>`;
     }).join('');
   })();
@@ -12969,6 +13139,27 @@ Rules:
     // ---- Farm details ----
     const farmDetailsHelpBtn=document.getElementById('farmDetailsHelp');
     if(farmDetailsHelpBtn) farmDetailsHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('Add as much detail about your farm/resources as possible. The app may then be able to suggest improvements/grants based on the info given e.g. types of field, size, soil type, altitude, lack of hedges, previous grants granted/declined etc.'); };
+    const landParcelsHelpBtn=document.getElementById('landParcelsHelp');
+    if(landParcelsHelpBtn) landParcelsHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('\u2022 On ruralpayments.service.gov.uk, go to Land > View parcels (or similar) and export/download your parcel list \u2014 an .xlsx or .csv with a column for parcel ID and total area.\n\n\u2022 Import it here rather than typing each field in below \u2014 this covers parcel ID, size and land cover, and is included in the farm summary export.\n\n\u2022 Re-importing replaces the whole list with whatever\u2019s in the new file, so use a fresh export next time your parcels change.\n\n\u2022 This is separate from the fields you describe below \u2014 add a field below only for the ones you want to record extra detail on (soil, drainage, hedges, schemes), not every parcel.'); };
+    const landParcelsFileInputEl=document.getElementById('landParcelsFileInput');
+    document.querySelectorAll('#landParcelsImportBtn').forEach(el=>el.onclick=(e)=>{ e.stopPropagation(); if(landParcelsFileInputEl) landParcelsFileInputEl.click(); });
+    if(landParcelsFileInputEl) landParcelsFileInputEl.onchange=(e)=>{
+      const file=e.target.files && e.target.files[0];
+      if(file) runLandParcelsImport(file);
+    };
+    const landParcelsToggleListBtn=document.getElementById('landParcelsToggleList');
+    if(landParcelsToggleListBtn) landParcelsToggleListBtn.onclick=(e)=>{ e.stopPropagation(); landParcelsListExpanded=!landParcelsListExpanded; render(); };
+    const landParcelsRemoveBtn=document.getElementById('landParcelsRemoveBtn');
+    if(landParcelsRemoveBtn) landParcelsRemoveBtn.onclick=(e)=>{
+      e.stopPropagation();
+      showConfirmModal('Remove all '+landParcels.length+' imported parcels? This doesn\u2019t affect anything on Rural Payments itself \u2014 you can re-import at any time.', async()=>{
+        landParcels=[]; landParcelsImportedAt=null; landParcelsSourceFilename=null; landParcelsListExpanded=false;
+        await persistAll();
+        logMsg('Removed the imported land parcel list.');
+        render();
+        showSaveToast('Removed');
+      }, null, 'Remove', 'Cancel');
+    };
     document.querySelectorAll('[data-fdcathelp]').forEach(el=>el.onclick=(e)=>{ e.stopPropagation(); showInfoModal(farmDetailTypeHelpText(el.dataset.fdcathelp)); });
     const fdToggle=(el)=>{
       const cat=el.dataset.toggleFdcat;
