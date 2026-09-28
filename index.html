@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-24ab';
+const APP_BUILD_VERSION = '2026-09-28a';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-24ab';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-28a',
+    date: '28 Sep 2026',
+    bullets: [
+      "Cost per kg gained: feed cost is now shared out by how many days each animal was actually on the farm while the fodder was being used, instead of splitting it evenly across today\u2019s animals. Animals bought or sold part-way through a bag or bale now pay for their own days only. Fodder still in use isn\u2019t counted until you mark it as exhausted."
+    ]
+  },
   {
     version: '2026-09-24ab',
     date: '26 Sep 2026',
@@ -4119,19 +4126,105 @@ function activeAnimalCountOnDate(dateStr){
 }
 function feedRecordCost(r){ return r.total_cost!=null ? r.total_cost : (r.sack_price||0)*(r.sacks||0); }
 
-// Guide cost, not an accurate expense (per the spec): each feed purchase's
-// total cost is split evenly across whoever was active on the farm on the
-// day that purchase was logged, and an animal accumulates a share for every
-// purchase it was present for during its time on the farm.
-function feedCostTotal(animalId){
-  let total=0;
-  feedRecords.filter(r=>!r.deleted_at).forEach(r=>{
-    if(!wasAnimalActiveOnDate(animalId, r.start_date)) return;
-    const herdSize=activeAnimalCountOnDate(r.start_date);
-    if(herdSize>0) total += feedRecordCost(r)/herdSize;
-  });
-  return total;
+// ==== FODDER COST ALLOCATION START (animal-days) ====
+// Guide cost, not an accurate expense. Each EXHAUSTED fodder record's cost is
+// spread over animal-days — one animal on the farm for one day — across the
+// days the record was actually in "Using" (its usage periods; storage gaps
+// don't count). An animal counts from the day it arrives and stops on the day
+// it leaves, matching wasAnimalActiveOnDate. rate = record cost / total
+// animal-days; an animal's cost = its animal-days x rate, summed over records.
+// Records still in use (or paused) are returned as `pending`, not allocated,
+// because dividing a part-used record's full cost would overcharge early animals.
+// Spec: "Fodder cost allocation" in the species & nation rules doc.
+// Days are whole UTC-date numbers; intervals are half-open [from, to).
+function dayNum(s){
+  const p=String(s).slice(0,10).split('-');
+  return Math.round(Date.UTC(+p[0], +p[1]-1, +p[2])/86400000);
 }
+// The stretches of days an animal was 'active', rebuilt from its status events.
+// Arrival day is included, leaving day is not; a restore opens a new stretch.
+function animalActiveIntervals(animalId){
+  const evs=(events[animalId]||[]).slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+  const out=[]; let start=null;
+  evs.forEach(e=>{
+    const d=dayNum(e.created_at);
+    if(e.to_status==='active'){ if(start===null) start=d; }
+    else if(start!==null){ if(d>start) out.push([start,d]); start=null; }
+  });
+  if(start!==null) out.push([start,Infinity]);
+  return out;
+}
+// Half-open day windows [start, end+1) in which this record was being fed out.
+function feedRecordUsageWindows(rec){
+  const exhaustedDay = rec.exhausted_at ? dayNum(rec.exhausted_at) : null;
+  const ups=feedUsageRecords.filter(u=>u.feed_record_id===rec.id && u.start_date);
+  if(ups.length){
+    return ups.map(u=>{
+      const endDay = u.end_date ? dayNum(u.end_date) : (exhaustedDay!==null ? exhaustedDay : dayNum(todayStr()));
+      return [dayNum(u.start_date), endDay+1];
+    }).filter(([s,e])=>e>s);
+  }
+  // Older record with no usage history: fall back to its own start/end dates,
+  // but only once it's been marked exhausted.
+  if(rec.status==='exhausted' && rec.start_date){
+    const endDay = rec.end_date ? dayNum(rec.end_date) : exhaustedDay;
+    if(endDay!==null && endDay>=dayNum(rec.start_date)) return [[dayNum(rec.start_date), endDay+1]];
+  }
+  return [];
+}
+function overlapDays(intervals, windows){
+  let n=0;
+  for(const [as,ae] of intervals) for(const [ws,we] of windows){
+    const lo=Math.max(as,ws), hi=Math.min(ae,we);
+    if(hi>lo) n+=hi-lo;
+  }
+  return n;
+}
+// opts.from / opts.to ('YYYY-MM-DD', inclusive) limit which days are charged to
+// animals in this view; each record's rate is still worked out over its whole
+// life, so a record spanning the boundary isn't over- or under-charged.
+// Returns { byAnimal: Map(id -> {total, animalDays}), byRecord: [{id, cost,
+// animalDays, rate}], pending: [records in use/paused], unallocated: cost of
+// exhausted records that had no animals on the farm }.
+function allocateFeedCosts(opts){
+  opts=opts||{};
+  const win = (opts.from||opts.to)
+    ? [opts.from ? dayNum(opts.from) : -Infinity, opts.to ? dayNum(opts.to)+1 : Infinity] : null;
+  const ivs=new Map(animals.map(a=>[a.id, animalActiveIntervals(a.id)]));
+  const byAnimal=new Map(), byRecord=[], pending=[];
+  let unallocated=0;
+  feedRecords.filter(r=>!r.deleted_at).forEach(r=>{
+    const windows=feedRecordUsageWindows(r);
+    if(r.status!=='exhausted'){
+      if(feedUsageRecords.some(u=>u.feed_record_id===r.id)) pending.push(r);
+      return;
+    }
+    if(!windows.length) return;
+    const cost=feedRecordCost(r);
+    let totalAD=0; const per=[];
+    animals.forEach(a=>{
+      const d=overlapDays(ivs.get(a.id), windows);
+      if(d>0){ totalAD+=d; per.push([a.id]); }
+    });
+    if(!totalAD){ unallocated+=cost; return; }
+    const rate=cost/totalAD;
+    byRecord.push({id:r.id, cost, animalDays:totalAD, rate});
+    const clipped = win ? windows.map(([s,e])=>[Math.max(s,win[0]), Math.min(e,win[1])]).filter(([s,e])=>e>s) : windows;
+    per.forEach(([id])=>{
+      const dd=overlapDays(ivs.get(id), clipped);
+      if(!dd) return;
+      const cur=byAnimal.get(id)||{total:0, animalDays:0};
+      cur.total+=rate*dd; cur.animalDays+=dd;
+      byAnimal.set(id, cur);
+    });
+  });
+  return { byAnimal, byRecord, pending, unallocated };
+}
+function feedCostTotal(animalId){
+  const r=allocateFeedCosts().byAnimal.get(animalId);
+  return r ? r.total : 0;
+}
+// ==== FODDER COST ALLOCATION END ====
 function recentFeedRecords(monthsBack=1){
   const cutoff=new Date(); cutoff.setMonth(cutoff.getMonth()-monthsBack);
   return feedRecords.filter(r=>!r.deleted_at && new Date(r.start_date)>=cutoff).sort((a,b)=>new Date(b.start_date)-new Date(a.start_date));
@@ -6187,31 +6280,32 @@ function insightsChecklistItems(){
 }
 // ---------- Cost per kg gained (Insights) ----------
 // Pure arithmetic on records already kept — no AI, no Groq. Medicine cost
-// is exact per animal; feed cost isn't tracked per animal at all, so it's
-// split evenly across active animals by headcount — a real estimate, not
+// is exact per animal; feed cost is allocated by animal-days on the farm
+// (see allocateFeedCosts) over the last 12 months — a real estimate, not
 // exact accounting, and said so on screen rather than presented as if it
-// were precise.
+// were precise. Fodder still in use is left out until it's marked exhausted.
 function buildCostPerKgReport(){
   const yearAgo=new Date(); yearAgo.setFullYear(yearAgo.getFullYear()-1);
   const active=animals.filter(a=>a.status==='active');
   const feed12=feedRecords.filter(r=>!r.deleted_at && new Date(r.purchased_at||r.date||r.created_at)>=yearAgo);
   const totalFeedCost=feed12.reduce((s,r)=>s+feedRecordCost(r),0);
-  const feedPerAnimal=active.length ? totalFeedCost/active.length : 0;
+  const alloc=allocateFeedCosts({from:yearAgo.toISOString().slice(0,10)});
 
   const groups={};
   active.forEach(a=>{
     const b=breeds.find(x=>x.id===a.breed_id);
     const key=b?b.name:'Unknown breed';
-    const g=groups[key]||(groups[key]={breed:key, count:0, medCost:0, kgGained:0, animalsWithGain:0});
+    const g=groups[key]||(groups[key]={breed:key, count:0, medCost:0, feedCost:0, kgGained:0, animalsWithGain:0});
     g.count++;
+    const fa=alloc.byAnimal.get(a.id); if(fa) g.feedCost += fa.total;
     const meds=medicineRecords.filter(r=>r.animal_id===a.id && new Date(r.administered_at)>=yearAgo && !tbRecordKind(r));
     g.medCost += meds.reduce((s,r)=>s+(r.cost||0),0);
     const ws=weights.filter(w=>w.animal_id===a.id && w.weight_kg!=null && new Date(w.recorded_at)>=yearAgo).sort((x,y)=>new Date(x.recorded_at)-new Date(y.recorded_at));
     if(ws.length>=2){ g.kgGained += (ws[ws.length-1].weight_kg-ws[0].weight_kg); g.animalsWithGain++; }
   });
   const rows=Object.values(groups).map(g=>{
-    const feedCost=feedPerAnimal*g.count, totalCost=g.medCost+feedCost;
-    return {...g, feedCost, totalCost, costPerKg: g.kgGained>0 ? totalCost/g.kgGained : null};
+    const totalCost=g.medCost+g.feedCost;
+    return {...g, totalCost, costPerKg: g.kgGained>0 ? totalCost/g.kgGained : null};
   }).sort((a,b)=>b.count-a.count);
 
   const exited=animals.filter(a=>a.realized_value!=null && a.realized_value_date && new Date(a.realized_value_date)>=yearAgo);
@@ -6219,7 +6313,7 @@ function buildCostPerKgReport(){
   const med12=medicineRecords.filter(r=>new Date(r.administered_at)>=yearAgo && !tbRecordKind(r)).reduce((s,r)=>s+(r.cost||0),0);
   const overallMargin = exited.length ? realisedValue-totalFeedCost-med12 : null;
 
-  return { rows, totalFeedCost, med12, realisedValue, overallMargin, hasGainData: rows.some(r=>r.animalsWithGain>0), hasSales: exited.length>0 };
+  return { rows, totalFeedCost, feedPending:alloc.pending.length, med12, realisedValue, overallMargin, hasGainData: rows.some(r=>r.animalsWithGain>0), hasSales: exited.length>0 };
 }
 function renderOpportunitiesBody(){
   const bullets=[
@@ -6512,7 +6606,7 @@ function renderReportDetail(){
   else if(type==='costperkg'){
     title='Cost per kg gained';
     const r=buildCostPerKgReport();
-    body=`<div style="font-size:15px;color:var(--grey);margin-bottom:12px;">Estimate \u2014 medicine cost is exact per animal, but feed cost isn\u2019t tracked per animal, so it\u2019s split evenly across your active animals by headcount. Covers the last 12 months.</div>`
+    body=`<div style="font-size:15px;color:var(--grey);margin-bottom:12px;">Estimate \u2014 medicine cost is exact per animal. Feed cost is shared out by the days each animal was on the farm while that fodder was being used, so animals bought or sold part-way pay for fewer days. Covers the last 12 months.${r.feedPending?` ${r.feedPending} fodder record${r.feedPending===1?' is':'s are'} still in use and not counted until marked exhausted.`:''}</div>`
       + (r.hasGainData ? r.rows.filter(g=>g.animalsWithGain>0).map(g=>`
         <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
