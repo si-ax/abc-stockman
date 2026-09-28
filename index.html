@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-28c';
+const APP_BUILD_VERSION = '2026-09-28d';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-28c';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-28d',
+    date: '28 Sep 2026',
+    bullets: [
+      "Animal List now caps at 250 animals (\u201cLimited to 250 records \u2014 use filters or order results\u201d) instead of computing Health Score and Profit for every animal on a large farm on every screen. Filtering down below 250 shows everything as normal."
+    ]
+  },
   {
     version: '2026-09-28c',
     date: '28 Sep 2026',
@@ -7246,22 +7253,39 @@ function renderHerd(){
     hiddenOlderCount = list.length - withinYear.length;
     list = withinYear;
   }
-  list = list.map(a=>({
-    a, profit: estimatedProfit(a), bcsRec: lastBcsRecord(a.id), hs: healthScore(a)
-  }));
+  // Cap at HERD_DISPLAY_LIMIT so a farm with thousands of animals doesn't
+  // compute Health Score / Profit / BCS for all of them on every render,
+  // or hand the browser a table with thousands of rows to lay out. When
+  // sorted by Name (the default, and the common case for a big farm) the
+  // list can be capped BEFORE any of those per-row calculations run, since
+  // name order doesn't depend on them. Profit/BCS/Health sort genuinely
+  // needs every filtered animal's value to put the right 250 on top, so
+  // there the calculation still runs for the whole filtered list and only
+  // the final slice is capped — same correctness, no shortcut available.
+  const HERD_DISPLAY_LIMIT=250;
+  const cappedByLimit = list.length>HERD_DISPLAY_LIMIT;
   const dir = sortDir==='asc'?1:-1;
-  list.sort((x,y)=>{
-    let primary=0;
-    if(sortColumn==='name') primary = dir*((animalDisplayName(x.a)).localeCompare(animalDisplayName(y.a)));
-    else if(sortColumn==='profit') primary = dir*((x.profit??-Infinity)-(y.profit??-Infinity));
-    else if(sortColumn==='bcs') primary = dir*((x.bcsRec?x.bcsRec.bcs:-1)-(y.bcsRec?y.bcsRec.bcs:-1));
-    else if(sortColumn==='health') primary = dir*(x.hs.total-y.hs.total);
-    if(primary!==0 || sortColumn==='name') return primary;
-    // Tie-break on whatever's shown in the Name column (name/EID/Mgmt ID,
-    // per farmSettings.use_animal_names) so animals sharing a score don't
-    // jump around unpredictably between renders.
-    return (animalDisplayName(x.a)).localeCompare(animalDisplayName(y.a));
-  });
+  if(sortColumn==='name'){
+    list.sort((x,y)=>dir*((animalDisplayName(x)).localeCompare(animalDisplayName(y))));
+    if(cappedByLimit) list=list.slice(0,HERD_DISPLAY_LIMIT);
+    list = list.map(a=>({ a, profit: estimatedProfit(a), bcsRec: lastBcsRecord(a.id), hs: healthScore(a) }));
+  } else {
+    list = list.map(a=>({
+      a, profit: estimatedProfit(a), bcsRec: lastBcsRecord(a.id), hs: healthScore(a)
+    }));
+    list.sort((x,y)=>{
+      let primary=0;
+      if(sortColumn==='profit') primary = dir*((x.profit??-Infinity)-(y.profit??-Infinity));
+      else if(sortColumn==='bcs') primary = dir*((x.bcsRec?x.bcsRec.bcs:-1)-(y.bcsRec?y.bcsRec.bcs:-1));
+      else if(sortColumn==='health') primary = dir*(x.hs.total-y.hs.total);
+      if(primary!==0) return primary;
+      // Tie-break on whatever's shown in the Name column (name/EID/Mgmt ID,
+      // per farmSettings.use_animal_names) so animals sharing a score don't
+      // jump around unpredictably between renders.
+      return (animalDisplayName(x.a)).localeCompare(animalDisplayName(y.a));
+    });
+    if(cappedByLimit) list=list.slice(0,HERD_DISPLAY_LIMIT);
+  }
   const arrow=(col)=> sortColumn===col ? `<span class="arrow">${sortDir==='asc'?'▲':'▼'}</span>` : '';
   const th=(col,label)=>`<th class="${sortColumn===col?'sorted':''}" data-sort="${col}">${label}${arrow(col)}</th>`;
 
@@ -7295,6 +7319,7 @@ function renderHerd(){
         </tbody>
       </table>` : '<div class="empty">No animals match.</div>'}
       ${hiddenOlderCount>0?`<button id="herdShowAllHistory" class="fullbtn ghost" style="margin-top:10px;">Show ${hiddenOlderCount} more from over 12 months ago</button>`:''}
+      ${cappedByLimit?`<div style="text-align:center;margin-top:10px;color:var(--grey);"><div style="font-size:14px;font-weight:700;">Limited to ${HERD_DISPLAY_LIMIT} records</div><div style="font-size:13px;">Use filters or order results</div></div>`:''}
     </div>
     ${footerBar(herdSelectMode ? [
       {id:'herd-help', icon:'help', label:'Help'},
