@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-26d';
+const APP_BUILD_VERSION = '2026-09-24ab';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -309,39 +309,17 @@ const APP_BUILD_VERSION = '2026-09-26d';
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
   {
-    version: '2026-09-26d',
+    version: '2026-09-24ab',
     date: '26 Sep 2026',
     bullets: [
-      "Settings > Farm details > Fields: new Import from Rural Payments button \u2014 reads the parcel export from ruralpayments.service.gov.uk (parcel ID, size, land cover, BPS-eligible area) straight in, instead of typing every field up individually. Shows a total/breakdown, with View list, Re-import and Remove. The individual field write-ups (soil, drainage, hedges, schemes) are unchanged and stay optional, for whichever fields you want extra detail on.",
-      "Export farm summary now includes a Land parcels section sourced from that import \u2014 totals, cover breakdown, and the full parcel list.",
+      "Fixed the AI just offering a menu of options instead of reading the farm/animal summary PDF when shared directly (not the website buttons) \u2014 the share only ever sent the file itself, nothing in the actual message box, since a share's title doesn't land there the way its text does. A short instruction now goes across with it every time, so there's always something to act on the moment it arrives, matching what the PDF itself already says on its first page.",
     ]
   },
   {
-    version: '2026-09-26c',
+    version: '2026-09-24aa',
     date: '26 Sep 2026',
     bullets: [
-      "Reports > Done today: the Animals added row now has a Move on farm button \u2014 opens Move Animal with On already selected and every animal added today already added to the list, ready for a batch of bought-in animals to be recorded as moved.",
-      "Move > Add animals: Select all is now half-width with a new Added today button next to it, for selecting just the animals bought and entered today rather than the whole herd.",
-      "Move: an On-farm move now automatically logs an assumed TB test dated 60 days before the move for any animal that doesn't already have one on file \u2014 UK law requires a TB test within 60 days before a bought-in animal moves onto the farm, and that test is normally done by the seller/market vet before it ever arrives, so there's no batch/vet detail to enter here. Shows in that animal's Medicine history with a note explaining it's an assumption, not a test done on this farm \u2014 worth a check.",
-    ]
-  },
-  {
-    version: '2026-09-26b',
-    date: '26 Sep 2026',
-    bullets: [
-      "Camera: photos taken in-app now request a much higher resolution from the phone's camera (was defaulting to a low one on some phones/browsers, iPhone included) \u2014 should make scanned batch numbers, expiry dates etc noticeably less blurry and easier to read.",
-      "Add Medicine: Scan medicine box is now hidden once a medicine already exists/has been saved, not just once it's been disposed of \u2014 it's only for adding a new one.",
-      "Add Medicine: Scan medicine box is now centred with a help button next to it, matching Scan passport/tag on Add Animal.",
-      "Add Medicine: once Product name has something in it \u2014 filled in by a scan, or typed in by hand \u2014 Type is now looked up and filled in automatically if it's still blank, matched against types already used on the farm where it can be. Always double-check it before saving.",
-    ]
-  },
-  {
-    version: '2026-09-26a',
-    date: '26 Sep 2026',
-    bullets: [
-      "Add Animal: fields under Scan passport/tag are now ordered Breed, Sex, D.O.B, Parents, Purchase, Mgmt ID, Name, Birth weight, Weaned weight, Notes, Photo \u2014 the passport-relevant details are grouped up top so they're quick to check against the document while it's in hand.",
-      "Add Animal: Mgmt ID and Name now correctly stay hidden when Settings has animal names/IDs turned off, matching an animal's own Details screen \u2014 they were showing up on this screen regardless of that setting.",
-      "Add Animal: entering an animal by scanning its passport or tag now marks it Reported to BCMS automatically on save, since having the passport/tag is itself proof that's already done.",
+      "Fixed Remove/Sold/Died/Stolen/Swapped/Restore silently doing nothing for an animal with no earlier history recorded against it \u2014 confirming one of these actions crashed before it could save, with no error shown, no matter how many times \u201cYes\u201d was tapped. Any future failure here now shows a message instead of failing silently.",
     ]
   },
   {
@@ -2637,16 +2615,6 @@ let settingsOpenSection=null, settingsShowAddForm=false;
 // is open, and the add/edit draft if the form's showing. The draft holds the
 // typed text so a background re-render (periodic sync) can't wipe it.
 let farmDetailsOpenCat=null, farmDetailEdit=null; // farmDetailEdit: {id|null, category, name, details}
-// Imported once from the farmer's own Rural Payments (ruralpayments.service.gov.uk)
-// land parcel export, rather than typing every field in by hand as a Farm
-// detail — that export is the government's own authoritative parcel list
-// (id, area, land cover, BPS-eligible area), re-typing it would just be
-// duplicate data entry for something the farmer already has on file
-// elsewhere. Re-importing (a fresh export from the site) replaces the
-// whole list outright, same as any other "current state" import in this
-// app — there's no per-parcel edit UI, since the source of truth is the
-// government site, not this app.
-let landParcels=[], landParcelsImportedAt=null, landParcelsSourceFilename=null, landParcelsListExpanded=false, landParcelsImportBusy=false;
 let importFile=null, importBusy=false, importError='';
 let backupRestoreFile=null, backupRestoreBusy=false, backupRestoreError='', backupRestoreOpen=false;
 let usingFeed=true, usingFeedLog=[];
@@ -3000,10 +2968,6 @@ async function loadAll(){
     try{ knownFarmCodes= kfc?JSON.parse(kfc):[]; }catch(e){ knownFarmCodes=[]; }
     const fdl=await safeGet('local:farmdetails');
     farmDetails= fdl?JSON.parse(fdl):[];
-    const lp=await safeGet('local:landparcels');
-    try{ landParcels= lp?JSON.parse(lp):[]; }catch(e){ landParcels=[]; }
-    landParcelsImportedAt=(await safeGet('local:landparcelsimportedat'))||null;
-    landParcelsSourceFilename=(await safeGet('local:landparcelssourcefilename'))||null;
   }
 }
 // ---------- farm data import (Settings > Import farm data) ----------
@@ -3078,89 +3042,6 @@ function exportFarmDataXlsx(){
 
   const stamp=new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, 'aBC_Stockman_Export_'+stamp+'.xlsx');
-}
-// ---------- Land parcels import (Settings > Farm details > Fields) ----------
-// Reads the farmer's own land parcel export from the Rural Payments
-// service (ruralpayments.service.gov.uk) — a spreadsheet of every
-// registered parcel with its size, land cover, and BPS-eligible area —
-// rather than asking them to type up to 70+ fields in one at a time as
-// individual Farm details. Government exports name their one sheet
-// differently between farms/years, so every sheet is checked for a
-// header that looks like this export rather than assuming a fixed sheet
-// name; likewise columns are matched by header text, not position, so a
-// reordered or slightly renamed column (a future export version) doesn't
-// silently misfile data into the wrong field.
-async function parseLandParcelsFile(file){
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, {type:'array', cellDates:true});
-  let rows=null;
-  for(const name of wb.SheetNames){
-    const ws=wb.Sheets[name];
-    const r=XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:true});
-    if(r && r.length && Array.isArray(r[0]) && r[0].some(h=>String(h||'').toLowerCase().includes('parcel'))){ rows=r; break; }
-  }
-  if(!rows) throw new Error('Couldn\u2019t find a parcel list in that file \u2014 make sure it\u2019s the land parcel export from Rural Payments (ruralpayments.service.gov.uk).');
-  const header=rows[0].map(h=>String(h||'').trim().toLowerCase());
-  const colIdx=(re)=>header.findIndex(h=>re.test(h));
-  const parcelIdx=colIdx(/parcel/);
-  const totalAreaIdx=colIdx(/total area/);
-  const coverIdx=colIdx(/cover/);
-  const bpsAreaIdx=colIdx(/bps/);
-  if(parcelIdx<0 || totalAreaIdx<0) throw new Error('That doesn\u2019t look like a Rural Payments parcel export \u2014 couldn\u2019t find a parcel ID and area column.');
-  const toNum=(v)=>{
-    if(v==null) return null;
-    if(typeof v==='number') return v;
-    const s=String(v).trim();
-    if(!s || s==='-') return null;
-    const n=parseFloat(s.replace(/,/g,''));
-    return isNaN(n)?null:n;
-  };
-  const parsed=[];
-  rows.slice(1).forEach(row=>{
-    if(!row || row[parcelIdx]==null || String(row[parcelIdx]).trim()==='') return;
-    parsed.push({
-      parcel_id: String(row[parcelIdx]).trim(),
-      area_ha: toNum(row[totalAreaIdx]),
-      eligible_cover: coverIdx>=0 && row[coverIdx]!=null ? String(row[coverIdx]).trim() : null,
-      bps_eligible_area_ha: bpsAreaIdx>=0 ? toNum(row[bpsAreaIdx]) : null,
-    });
-  });
-  if(!parsed.length) throw new Error('No parcel rows found in that file.');
-  return parsed;
-}
-function landParcelsTotals(){
-  const totalArea=landParcels.reduce((s,p)=>s+(p.area_ha||0),0);
-  const bpsArea=landParcels.reduce((s,p)=>s+(p.bps_eligible_area_ha||0),0);
-  return {count:landParcels.length, totalArea:Math.round(totalArea*100)/100, bpsArea:Math.round(bpsArea*100)/100};
-}
-function landParcelsBreakdown(){
-  const byType={};
-  landParcels.forEach(p=>{
-    const key=p.eligible_cover||'Unspecified';
-    if(!byType[key]) byType[key]={count:0, area:0};
-    byType[key].count++;
-    byType[key].area+=(p.area_ha||0);
-  });
-  return Object.entries(byType).map(([cover,v])=>({cover, count:v.count, area:Math.round(v.area*100)/100})).sort((a,b)=>b.area-a.area);
-}
-async function runLandParcelsImport(file){
-  landParcelsImportBusy=true; render();
-  try{
-    const parsed=await parseLandParcelsFile(file);
-    landParcels=parsed;
-    landParcelsImportedAt=new Date().toISOString();
-    landParcelsSourceFilename=file.name;
-    landParcelsListExpanded=false;
-    await persistAll();
-    logMsg('Imported <b>'+parsed.length+'</b> land parcels from Rural Payments ('+escapeHtml(file.name)+').');
-    landParcelsImportBusy=false;
-    render();
-    showSaveToast('Imported');
-  }catch(e){
-    landParcelsImportBusy=false;
-    render();
-    showInfoModal('Couldn\u2019t import that file: '+((e&&e.message)||String(e)));
-  }
 }
 async function runFarmDataImport(){
   if(!importFile) return;
@@ -3427,9 +3308,6 @@ async function persistAll(){
   await safeSet('local:breedingrecords', JSON.stringify(breedingRecords));
   await safeSet('local:breedpricehistory', JSON.stringify(breedPriceHistory));
   await safeSet('local:farmdetails', JSON.stringify(farmDetails));
-  await safeSet('local:landparcels', JSON.stringify(landParcels));
-  await safeSet('local:landparcelsimportedat', landParcelsImportedAt||'');
-  await safeSet('local:landparcelssourcefilename', landParcelsSourceFilename||'');
   await safeSet('local:knownfarmcodes', JSON.stringify(knownFarmCodes));
   await safeSet('local:farmopportunities', JSON.stringify(farmOpportunitiesLatest));
   await safeSet('local:devicefarmcode', deviceFarmCode||'');
@@ -3459,7 +3337,6 @@ function backupSnapshot(){
       injuryRecords, farmSettings, damageRecords, moveRecords, farmersVets,
       usingFeed, usingFeedLog, feedLocation, feedLocationLog,
       breedingRecords, breedPriceHistory, farmDetails,
-      landParcels, landParcelsImportedAt, landParcelsSourceFilename,
       deviceFarmCode, deviceFarmName, currentFarmerId, currentFarmerName,
     },
   };
@@ -3488,7 +3365,6 @@ async function restoreFullBackup(parsed){
   usingFeed=d.usingFeed!==undefined?d.usingFeed:true; usingFeedLog=d.usingFeedLog||[];
   feedLocation=d.feedLocation||'barn'; feedLocationLog=d.feedLocationLog||[];
   breedingRecords=d.breedingRecords||[]; breedPriceHistory=d.breedPriceHistory||[]; farmDetails=d.farmDetails||[];
-  landParcels=d.landParcels||[]; landParcelsImportedAt=d.landParcelsImportedAt||null; landParcelsSourceFilename=d.landParcelsSourceFilename||null;
   deviceFarmCode=d.deviceFarmCode||null; deviceFarmName=d.deviceFarmName||null;
   currentFarmerId=d.currentFarmerId||null; currentFarmerName=d.currentFarmerName||null;
   ensureTbTestMedicineType();
@@ -4138,44 +4014,6 @@ function tbTestDueSoon(animalId){
 // to a move, is what the warning is supposed to be for.
 function animalMoveRisk(animalId){
   return !!activeWithdrawal(animalId) || tbTestOverdue(animalId);
-}
-// A cattle move ONTO the farm legally needs a TB test within the last 60
-// days — a separate, fixed rule from the farm's own general re-test
-// interval (tb_test_interval_months, typically 6/12/24/48 months), which is
-// about when THIS farm re-tests its herd, not the pre-movement test a
-// bought-in animal must already have had, almost always done by the seller
-// or a market vet before the animal ever arrives here. We never see that
-// test's actual details (batch, tuberculin expiry, which vet) — there's
-// nothing to type into the normal fields — so rather than leaving the
-// animal showing as "TB overdue" from the moment it arrives (wrong: it was
-// legally tested, we just weren't the ones who saw the paperwork), a single
-// placeholder record is logged automatically, dated 60 days before the move
-// date. It deliberately reuses the old single-record "legacy" TB match
-// (see tbRecordKind) rather than the modern avian+bovine pair, since a pair
-// with invented batch numbers would be worse than no batch numbers at all.
-// Only fires when the animal doesn't already have a valid test on file —
-// commitMoveEntry calls this on every save of an "on" move, so this being a
-// no-op once backfilled (tbTestOverdue flips to false) is what keeps it
-// from ever running twice for the same animal.
-function backfillPreMovementTb(moveDateStr, animalIds){
-  const assumedDate=(()=>{ const d=new Date(moveDateStr+'T12:00:00'); d.setDate(d.getDate()-60); return d.toISOString(); })();
-  const backfilled=[];
-  animalIds.forEach(animalId=>{
-    if(!animals.some(a=>a.id===animalId)) return;
-    if(!tbTestOverdue(animalId)) return; // already has a test on file within the farm's own interval — nothing to assume
-    const rec={
-      id:uuid(), animal_id:animalId, medicine_type_id:null, product_name:'TB test',
-      farmer_vet_id:currentFarmerId, stock:null, reason:'routine', injury_id:null,
-      cost:0, batch_no:null, expiry_date:null, animal_weight_kg:null,
-      dosage_amount:null, dosage_unit:null, method_given:null, photo_data:null,
-      administered_at:assumedDate, withdrawal_until:null,
-      note:'Assumed \u2014 UK law requires a TB test within 60 days before a move onto the farm, done by the previous keeper before this animal arrived. Batch/vet details weren\u2019t available to record, so this is a placeholder for that legal test, not one carried out here.',
-      farmer_id:currentFarmerId,
-    };
-    medicineRecords.push(rec);
-    backfilled.push(rec);
-  });
-  return backfilled;
 }
 // --- Statutory reporting deadlines (BCMS/CTS) ---
 // These track the *notification* deadlines that carry real legal weight —
@@ -6192,21 +6030,6 @@ async function buildFarmSummaryPdfBlob(){
     'Fodder cost: \u00a3'+(c.fodder_gbp!=null?c.fodder_gbp:'\u2014')+(c.fodder_types&&c.fodder_types.length?' ('+c.fodder_types.join(', ')+')':''),
   ]);
 
-  y=pdfAddHeading(doc, y, 'Land parcels (from Rural Payments)');
-  if(landParcels.length){
-    const lpt=landParcelsTotals();
-    const lpBreakdown=landParcelsBreakdown();
-    y=pdfAddLines(doc, y, [
-      'Imported '+fmtDate(landParcelsImportedAt)+' \u2014 '+lpt.count+' parcels, '+lpt.totalArea+' ha total'+(lpt.bpsArea?', '+lpt.bpsArea+' ha BPS-eligible':'')+'.',
-      'By land cover: '+lpBreakdown.map(b=>b.cover+': '+b.count+' parcels, '+b.area+' ha').join('; ')+'.',
-    ]);
-    y=pdfAddLines(doc, y, landParcels.slice().sort((a,b)=>a.parcel_id.localeCompare(b.parcel_id, undefined, {numeric:true})).map(p=>
-      p.parcel_id+': '+(p.area_ha!=null?p.area_ha+'ha':'\u2014')+(p.eligible_cover?', '+p.eligible_cover:'')+(p.bps_eligible_area_ha!=null?', BPS eligible '+p.bps_eligible_area_ha+'ha':'')
-    ), {size:8});
-  } else {
-    y=pdfAddLines(doc, y, ['Not imported yet \u2014 see Settings > Farm details > Fields in the app to import the parcel list from Rural Payments (ruralpayments.service.gov.uk).']);
-  }
-
   y=pdfAddHeading(doc, y, 'Farm details (fields, buildings, machinery, other)');
   if(farmDetails.length){
     FARM_DETAIL_CATEGORIES.forEach(cat=>{
@@ -6330,7 +6153,7 @@ async function runShareAnimalSummary(animalId){
     const fname='aBC-'+(a?animalDisplayName(a).replace(/[^a-z0-9]+/gi,'-'):'Animal')+'-Summary-'+todayStr()+'.pdf';
     const file=new File([doc.output('blob')], fname, {type:'application/pdf'});
     if(navigator.canShare && navigator.canShare({files:[file]})){
-      try{ await navigator.share({files:[file], title:'aBC Stockman \u2014 '+(a?animalDisplayName(a):'Animal')+' summary'}); }
+      try{ await navigator.share({files:[file], title:'aBC Stockman \u2014 '+(a?animalDisplayName(a):'Animal')+' summary', text:'Please read the attached animal summary and use it to answer any questions I ask about this animal.'}); }
       catch(e){ if(e.name!=='AbortError') throw e; }
     } else {
       doc.save(fname);
@@ -6517,7 +6340,6 @@ function renderReportDetail(){
               const ev=(events[a.id]||[]).find(e=>e.event_type==='created');
               return `<div><div class="row" data-gotoanimalscreen="${a.id}" data-gotoscreen="detail"><span style="font-size:16px;text-decoration:underline;text-decoration-color:var(--line);">${animalDisplayName(a)}</span><span style="color:var(--grey);">${breedName(a.breed_id)}</span></div>${!reportDoneTodayFarmerFilter?`<div style="font-size:12px;color:var(--grey);padding:0 12px 6px;">by ${loggedByLabel(ev&&ev.farmer_id)}</div>`:''}</div>`;
             }).join(''):''}
-            ${(r.key==='today-added' && d.addedToday.length)?`<button id="doneTodayMoveOn" class="fullbtn" style="margin-top:10px;">Move on farm (${d.addedToday.length})</button>`:''}
             ${r.key==='today-exited'?d.exitedToday.map(({a,status,farmer_id})=>`<div><div class="row" data-gotoanimalscreen="${a.id}" data-gotoscreen="detail"><span style="font-size:16px;text-decoration:underline;text-decoration-color:var(--line);">${animalDisplayName(a)}</span><span style="color:var(--grey);">${ANIMAL_STATUS_LABELS[status]||status}</span></div>${!reportDoneTodayFarmerFilter?`<div style="font-size:12px;color:var(--grey);padding:0 12px 6px;">by ${loggedByLabel(farmer_id)}</div>`:''}</div>`).join(''):''}
           </div>`:''}
         </div>`;
@@ -7723,6 +7545,12 @@ function renderAdd(){
         `}
       </div>
 
+      <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
+      ${photoCaptureBlockModal('photo', newAnimalPhoto, 'Click to take photo of animal')}
+
+      <div class="formrow"><label>Mgmt ID <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label><div class="formctrl"><input type="text" id="f-tag" placeholder="e.g. A-1101"></div></div>
+      <div class="field-error" id="err-tag" style="padding:0 2px;"></div>
+
       <div class="formrow"><label>Breed</label><div class="formctrl" style="display:flex;align-items:center;gap:8px;"><select id="f-breed" style="flex:1;">${(()=>{ const activeBreeds=sortedBreeds(breeds.filter(b=>b.active)); return (activeBreeds.length===1?'':'<option value="" selected>\u2014 Select \u2014</option>')+activeBreeds.map(b=>`<option value="${b.id}" ${activeBreeds.length===1?'selected':''}>${b.name}</option>`).join(''); })()}</select><button type="button" id="breedCrossToggle" title="Cross-bred \u2014 tap to toggle" style="width:36px;height:36px;flex-shrink:0;border-radius:8px;border:1px solid var(--line);background:#fff;font-weight:800;font-size:16px;cursor:pointer;color:${newAnimalIsCross?'var(--ink)':'var(--grey-light)'};">X</button></div></div>
       <div style="font-size:11px;color:var(--grey);padding:0 2px;margin-top:-6px;">X = cross-bred. Filled in automatically from a scanned passport, or tap to set by hand.</div>
       <div class="field-error" id="err-breed" style="padding:0 2px;"></div>
@@ -7736,6 +7564,8 @@ function renderAdd(){
       <div class="formrow"><label>D.O.B</label><div class="formctrl">${dateFieldWithJump(`<input type="date" id="f-birth" max="${today}" style="flex:1;min-width:0;">`,'f-birth')}</div></div>
       <div class="field-error" id="err-birth" style="padding:0 2px;"></div>
 
+      <div class="formrow"><label>Name</label><div class="formctrl"><input type="text" id="f-name" placeholder="Optional"></div></div>
+
       <div class="formrow"><label>Parents</label><div class="formctrl" style="display:flex;flex-direction:column;gap:2px;">
         <div style="display:flex;gap:8px;">
           <button class="parentbtn ${(mother||newAnimalMotherExternalEid)?'set':''}" id="pickMother" style="flex:1;">${motherLabel}</button>
@@ -7747,27 +7577,15 @@ function renderAdd(){
         </div>
       </div></div>
 
-      <div class="formrow"><label style="color:var(--red);">Purchase</label><div class="formctrl withunit"><span>&pound;</span><input type="text" inputmode="decimal" id="f-purchaseprice" placeholder="Optional"></div></div>
-
-      ${farmSettings.use_animal_names===false?'':`
-      <div class="formrow"><label>Mgmt ID <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label><div class="formctrl"><input type="text" id="f-tag" placeholder="e.g. A-1101"></div></div>
-      <div class="field-error" id="err-tag" style="padding:0 2px;"></div>
-      `}
-
-      ${farmSettings.use_animal_names===false?'':`
-      <div class="formrow"><label>Name</label><div class="formctrl"><input type="text" id="f-name" placeholder="Optional"></div></div>
-      `}
-
       <div class="formrow"><label>Birth weight</label><div class="formctrl withunit"><input type="text" inputmode="decimal" id="f-birthweight" placeholder="Optional"><span>KG</span></div></div>
 
       <div class="formrow"><label>Weaned weight</label><div class="formctrl withunit"><input type="text" inputmode="decimal" id="f-weanedweight" placeholder="Optional"><span>KG</span></div></div>
 
+      <div class="formrow"><label style="color:var(--red);">Purchase</label><div class="formctrl withunit"><span>&pound;</span><input type="text" inputmode="decimal" id="f-purchaseprice" placeholder="Optional"></div></div>
+
       <label style="margin-top:14px;">Notes <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       <textarea id="f-notes" maxlength="5000" style="height:38px;overflow:hidden;resize:none;" oninput="autoGrowTextarea(this);document.getElementById('addNotesCharCount').textContent=(5000-this.value.length)+' characters remaining'" placeholder="General notes about this animal"></textarea>
       <div id="addNotesCharCount" style="font-size:13px;color:var(--grey);text-align:right;margin-top:2px;">5000 characters remaining</div>
-
-      <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
-      ${photoCaptureBlockModal('photo', newAnimalPhoto, 'Click to take photo of animal')}
     </div>
     ${footerBar([
       {id:'add-help', icon:'help', label:'Help'},
@@ -7914,14 +7732,8 @@ async function commitMoveEntry(){
     moveRecords.push(rec);
   }
   moveSessionRecordId=rec.id;
-  let backfilled=[];
-  if(moveDirection==='on') backfilled=backfillPreMovementTb(moveDate, moveAnimalIds);
   await persistAll();
   await syncMoveToSupabase(rec);
-  if(backfilled.length){
-    for(const r of backfilled) await syncMedicineToSupabase(r);
-    logMsg('Assumed a pre-movement TB test (60 days before the move) for <b>'+backfilled.length+'</b> animal'+(backfilled.length===1?'':'s')+' with no test already on file \u2014 check their Medicine history.');
-  }
   return isNew;
 }
 
@@ -8257,7 +8069,6 @@ function renderMedicine(){
           <div class="formrow compact"><label>Batch No.</label><div class="formctrl"><input type="text" value="${escapeHtml(r.batch_no||'')}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
           `}
           <div class="formrow compact"><label>Expiry date</label><div class="formctrl"><input type="text" value="${r.expiry_date?fmtDate(r.expiry_date):''}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>
-          ${r.note?`<div class="formrow compact"><label>Note</label><div class="formctrl"><input type="text" value="${escapeHtml(r.note)}" readonly style="background:#f3f3f3;color:var(--grey);"></div></div>`:''}
           <button data-viewmedphoto="${r.id}" style="width:100%;height:100px;background:${r.photo_data?'#fff':'#e8e8e8'};border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-top:10px;padding:0;overflow:hidden;cursor:pointer;">
             ${r.photo_data?`<img src="${r.photo_data}" data-photo-fallback-key="${escapeHtml(r.photo_data)}" onerror="handlePhotoError(this)" style="width:100%;height:100%;object-fit:cover;">`:`<span style="width:32px;height:32px;color:var(--grey-light);">${icon('camera')}</span>`}
           </button>
@@ -8410,12 +8221,7 @@ function renderMedCabinetAdd(){
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>${title}</span><span></span></div>
     <div class="body">
-      ${editItem?'':`
-      <div id="scanMedicineBoxGroup" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:4px;">
-        <button class="eidbtn" id="scanMedicineBoxBtn">${icon('camera')}<span>Scan medicine box</span></button>
-        <button class="helpcircle" id="medBoxScanHelp">?</button>
-      </div>
-      `}
+      ${readOnly?'':`<button class="eidbtn" id="scanMedicineBoxBtn">${icon('camera')}<span>Scan medicine box</span></button>`}
       <label>Photo <span style="font-weight:400;text-transform:none;color:var(--grey);">(optional)</span></label>
       ${photoCaptureBlockModal('medcabphoto', medCabAddPhoto, 'Click to take photo of medicine')}
 
@@ -9053,51 +8859,6 @@ function renderSettings(){
       <input type="text" id="newFarmerVetName" placeholder="e.g. Dr. Smith">
     </div>`;
 
-// Shown at the top of the Fields panel in Farm details, above the list of
-// individually-described fields — importing here means a farmer with 70+
-// registered parcels never has to type each one in as its own Farm detail
-// just to get its size/land-cover on record; that already exists on Rural
-// Payments. Detailed narrative entries (soil, drainage, hedges, schemes)
-// stay exactly as before for whichever fields the farmer wants to add
-// that to, entirely separate from the imported list.
-function landParcelsSummaryHtml(){
-  if(landParcelsImportBusy){
-    return `<div style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;text-align:center;font-size:13.5px;color:var(--grey);">Reading file\u2026</div>`;
-  }
-  if(!landParcels.length){
-    return `<div style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;">
-      <div style="font-size:13.5px;color:var(--ink);margin-bottom:10px;">Got a lot of fields registered with the Rural Payments Agency? Import that list instead of typing each one in below \u2014 gets every parcel\u2019s ID, size and land cover onto the farm summary export in one go.</div>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <button id="landParcelsImportBtn" class="eidbtn">${icon('upload')}<span>Import from Rural Payments</span></button>
-        <button class="helpcircle" id="landParcelsHelp">?</button>
-      </div>
-      <input type="file" id="landParcelsFileInput" accept=".xlsx,.xls,.csv" style="display:none;">
-    </div>`;
-  }
-  const t=landParcelsTotals();
-  const breakdown=landParcelsBreakdown();
-  return `<div style="background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
-      <div style="font-size:14px;font-weight:700;color:var(--ink);">${t.count} parcels from Rural Payments \u2014 ${t.totalArea} ha total${t.bpsArea?(' ('+t.bpsArea+' ha BPS-eligible)'):''}</div>
-      <button class="helpcircle" id="landParcelsHelp" style="flex-shrink:0;">?</button>
-    </div>
-    <div style="font-size:12px;color:var(--grey);margin-top:2px;">Imported ${escapeHtml(fmtDateTimeShort(landParcelsImportedAt))}${landParcelsSourceFilename?' from '+escapeHtml(landParcelsSourceFilename):''}</div>
-    ${breakdown.length?`<div style="font-size:13px;color:var(--ink);margin-top:8px;">${breakdown.map(b=>escapeHtml(b.cover)+': '+b.count+' ('+b.area+' ha)').join(' \u00b7 ')}</div>`:''}
-    <div style="display:flex;gap:8px;margin-top:10px;">
-      <button id="landParcelsToggleList" class="fullbtn ghost" style="margin-top:0;flex:1;padding:8px;font-size:13px;">${landParcelsListExpanded?'Hide list':'View list'}</button>
-      <button id="landParcelsImportBtn" class="fullbtn ghost" style="margin-top:0;flex:1;padding:8px;font-size:13px;">Re-import</button>
-      <button id="landParcelsRemoveBtn" class="fullbtn danger" style="margin-top:0;flex:0 0 auto;padding:8px 12px;font-size:13px;display:flex;align-items:center;">${icon('trash')}</button>
-    </div>
-    <input type="file" id="landParcelsFileInput" accept=".xlsx,.xls,.csv" style="display:none;">
-    ${landParcelsListExpanded?`<div style="max-height:260px;overflow-y:auto;margin-top:10px;border-top:1px solid var(--line);padding-top:8px;">
-      ${landParcels.slice().sort((a,b)=>a.parcel_id.localeCompare(b.parcel_id, undefined, {numeric:true})).map(p=>`
-        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:3px 0;border-bottom:1px solid #eee;">
-          <span>${escapeHtml(p.parcel_id)}</span>
-          <span style="color:var(--grey);text-align:right;">${p.area_ha!=null?p.area_ha+' ha':'\u2014'}${p.eligible_cover?' \u00b7 '+escapeHtml(p.eligible_cover):''}</span>
-        </div>`).join('')}
-    </div>`:''}
-  </div>`;
-}
   const farmDetailsBody=(()=>{
     const intro=`<div style="font-size:13px;color:var(--grey);margin-bottom:10px;">Tell the app about your land and resources. Each entry is rated <span style="color:var(--red);font-weight:700;">red</span>/<span style="color:var(--amber);font-weight:700;">amber</span>/<span style="color:var(--green);font-weight:700;">green</span> for how much of the key detail it has.</div>`;
     return intro + FARM_DETAIL_CATEGORIES.map(cat=>{
@@ -9156,7 +8917,7 @@ function landParcelsSummaryHtml(){
           <button class="helpcircle" data-fdcathelp="${cat}" title="What to include" style="margin-right:8px;background:rgba(255,255,255,.28);">?</button>
           <span style="width:20px;height:20px;flex-shrink:0;">${icon(open?'triangleDown':'triangleRight')}</span>
         </div>
-        ${open?`<div class="damagepanel">${cat==='field' && !editingHere?landParcelsSummaryHtml():''}${editingHere?formHtml():(items.map(rowHtml).join('')||`<div class="empty" style="padding:8px 4px;">No ${def.label.toLowerCase()} yet \u2014 tap Add.</div>`)}</div>`:''}
+        ${open?`<div class="damagepanel">${editingHere?formHtml():(items.map(rowHtml).join('')||`<div class="empty" style="padding:8px 4px;">No ${def.label.toLowerCase()} yet \u2014 tap Add.</div>`)}</div>`:''}
       </div>`;
     }).join('');
   })();
@@ -9724,27 +9485,6 @@ async function readMedicineBoxFromPhotoGroq(file){
     expiryDate = raw.expiry_year+'-'+String(raw.expiry_month).padStart(2,'0')+'-'+String(day).padStart(2,'0');
   }
   return { productName: raw.product_name||null, batchNo: raw.batch_no||null, expiryDate, expiryWasMonthOnly: !!(raw.expiry_year && raw.expiry_month && !raw.expiry_day) };
-}
-// Text-only (no photo) lookup: given a product name — whether it came off a
-// scanned box or was typed in by hand, since plenty of boxes (like this
-// one) don't print the product name at all — asks Groq's general
-// knowledge what category of medicine it is, so the farmer doesn't have
-// to go look that up themselves every time. Strongly prefers a category
-// already in use on this farm (knownTypes) so a real match doesn't spawn
-// a near-duplicate category (e.g. "Wormer" vs "Anthelmintic") — only
-// falls back to suggesting a fresh one when nothing already used fits.
-// Best-effort only: returns null on anything not recognised, rather than
-// guessing, so a bad guess is never silently written into the record.
-async function lookupMedicineTypeGroq(productName, knownTypes){
-  const prompt='A UK cattle/livestock farmer is logging a veterinary medicine called "'+productName+'" in their medicine cabinet. '
-    +(knownTypes && knownTypes.length ? 'This farm already uses these medicine type categories: '+knownTypes.join(', ')+'. If this product clearly belongs to one of those, reply with that exact category text. Otherwise, ' : 'If you are confident, ')
-    +'reply with a short (1-3 word) standard veterinary medicine category for this product (e.g. Antibiotic, Wormer, Vaccine, Anti-inflammatory, Antiseptic, Vitamin/mineral supplement, Hormone, Sedative). '
-    +'Reply with ONLY a single JSON object and nothing else \u2014 no markdown fences, no explanation: {"type":"the category, or null if you don\u2019t recognise this product at all"}.';
-  const text=await callGroq(prompt, null, {json:true, maxTokens:60, timeoutMs:15000});
-  let raw;
-  try{ raw=parseAiJson(text); }
-  catch(parseErr){ throw new Error('Groq reply couldn\u2019t be read as data: \u201c'+text.slice(0,120)+'\u201d'); }
-  return raw.type||null;
 }
 async function readAnimalFromPassportGroq(file){
   if(!farmSettings.groq_api_key) throw new Error('No Groq key configured');
@@ -10369,14 +10109,7 @@ function renderModal(){
           <button class="helpcircle" id="movePickHelp">?</button>
         </div>
         <div id="movePickStatus" style="font-size:13px;color:var(--grey);margin-top:6px;display:none;"></div>
-        ${activeAnimals.length?(()=>{
-          const today=todayStr();
-          const addedTodayAnimals=activeAnimals.filter(a=>(events[a.id]||[]).some(ev=>ev.event_type==='created' && sameDay(ev.created_at, today)));
-          return `<div style="display:flex;gap:8px;margin-top:8px;">
-            <button id="movePickSelectAll" class="fullbtn ghost" style="flex:1;margin-top:0;padding:8px;font-size:14px;">Select all (${activeAnimals.length})</button>
-            ${addedTodayAnimals.length?`<button id="movePickAddedToday" class="fullbtn ghost" style="flex:1;margin-top:0;padding:8px;font-size:14px;">Added today (${addedTodayAnimals.length})</button>`:''}
-          </div>`;
-        })():''}
+        ${activeAnimals.length?`<button id="movePickSelectAll" class="fullbtn ghost" style="margin-top:8px;padding:8px;font-size:14px;">Select all (${activeAnimals.length})</button>`:''}
       </div>
       <div id="movePickList" style="flex:1;overflow-y:auto;padding:4px 16px;">
         ${activeAnimals.length? activeAnimals.map(a=>{
@@ -10743,7 +10476,7 @@ function renderModal(){
     const shareBtn=document.getElementById('pdfShareFile');
     if(shareBtn) shareBtn.onclick=async()=>{
       if(!lastExportedPdfFile) return;
-      try{ await navigator.share({files:[lastExportedPdfFile], title:'aBC Stockman Farm Summary'}); }
+      try{ await navigator.share({files:[lastExportedPdfFile], title:'aBC Stockman Farm Summary', text:'Please read the instructions on the first page of the attached PDF and act on them now \u2014 don\u2019t wait for me to ask.'}); }
       catch(e){ if(e.name!=='AbortError') showInfoModal('Couldn\u2019t open the share menu: '+e.message); }
     };
   }
@@ -10889,7 +10622,7 @@ function renderModal(){
       statusEl.textContent='Starting camera\u2026';
       shutterBtn.disabled=true;
       shutterBtn.onclick=takePhoto;
-      navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:2560}, height:{ideal:1440}, focusMode:{ideal:'continuous'}}, audio:false}).then(s=>{
+      navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}, audio:false}).then(s=>{
         if(settled){ s.getTracks().forEach(t=>t.stop()); return; } // closed while permission was pending
         stream=s;
         videoEl.srcObject=s;
@@ -11003,23 +10736,6 @@ function renderModal(){
       // see, not the whole herd. Animals already on the move are left
       // alone rather than re-added.
       const visibleIds=[...document.querySelectorAll('[data-pickmoveanimal]')].map(el=>el.dataset.pickmoveanimal);
-      const newlyAdded=visibleIds.filter(id=>!moveAnimalIds.includes(id));
-      if(!newlyAdded.length) return;
-      moveAnimalIds=[...moveAnimalIds, ...newlyAdded];
-      await commitMoveEntry();
-      queueMoveRiskWarnings(newlyAdded, {type:'movePickAnimal', term: modal && modal.term});
-      renderModal();
-      if(modal && modal.type==='movePickAnimal') showSaveToast('Added '+newlyAdded.length);
-    };
-    const movePickAddedTodayBtn=document.getElementById('movePickAddedToday');
-    if(movePickAddedTodayBtn) movePickAddedTodayBtn.onclick=async()=>{
-      // Same idea as Select all, but narrowed to today's own arrivals —
-      // just bought and entered via Add Animal, now needing to be recorded
-      // as having actually moved onto the farm. Only from what's currently
-      // visible, same as Select all.
-      const today=todayStr();
-      const visibleIds=[...document.querySelectorAll('[data-pickmoveanimal]')].map(el=>el.dataset.pickmoveanimal)
-        .filter(id=>(events[id]||[]).some(ev=>ev.event_type==='created' && sameDay(ev.created_at, today)));
       const newlyAdded=visibleIds.filter(id=>!moveAnimalIds.includes(id));
       if(!newlyAdded.length) return;
       moveAnimalIds=[...moveAnimalIds, ...newlyAdded];
@@ -11359,11 +11075,12 @@ function renderModal(){
 async function confirmModal(){
   const a=animals.find(x=>x.id===selectedId);
   const modalTypeAtStart=modal.type; // modal gets nulled below, before we need this for navigation
+  try{
   if(modal.type==='restore'){
     const reason=document.getElementById('modalReason').value.trim();
     if(!reason){ document.getElementById('modalErr').textContent='Reason is required to restore.'; return; }
     const restoredEvent={id:uuid(), event_type:'restored', from_status:a.status, to_status:'active', reason, created_at:new Date().toISOString(), farmer_id:currentFarmerId};
-    events[a.id].push(restoredEvent);
+    (events[a.id]=events[a.id]||[]).push(restoredEvent);
     a.status='active'; a.updated_at=new Date().toISOString();
     await persistAll();
     await syncAnimalToSupabase(a);
@@ -11371,7 +11088,7 @@ async function confirmModal(){
     logMsg('Restored <b>'+(animalDisplayName(a))+'</b> to active. Reason: &ldquo;'+escapeHtml(reason)+'&rdquo;');
   } else if(modal.type==='void'){
     const voidedEvent={id:uuid(), event_type:'voided', from_status:a.status, to_status:'voided', reason:null, created_at:new Date().toISOString(), farmer_id:currentFarmerId};
-    events[a.id].push(voidedEvent);
+    (events[a.id]=events[a.id]||[]).push(voidedEvent);
     a.status='voided'; a.updated_at=new Date().toISOString();
     await persistAll();
     await syncAnimalToSupabase(a);
@@ -11409,7 +11126,7 @@ async function confirmModal(){
     else realizedValue = isLoss ? -exitValueMag : exitValueMag;
     const exitIso = exitDate===todayStr() ? new Date().toISOString() : new Date(exitDate+'T12:00:00').toISOString();
     const exitEvent={id:uuid(), event_type:EXIT_STATUSES[modal.status], from_status:'active', to_status:modal.status, reason:null, note:note||null, created_at:exitIso, farmer_id:currentFarmerId};
-    events[a.id].push(exitEvent);
+    (events[a.id]=events[a.id]||[]).push(exitEvent);
     a.status=modal.status; a.updated_at=new Date().toISOString();
     a.realized_value=realizedValue;
     a.realized_value_date=exitDate;
@@ -11437,6 +11154,16 @@ async function confirmModal(){
   else if(modalTypeAtStart==='void') toastMsg=name+' removed (accidental entry)';
   else if(modalTypeAtStart==='exit') toastMsg=name+' marked as '+a.status+', removed from default animal list';
   showSaveToast(toastMsg);
+  }catch(err){
+    // A silent failure here is worse than almost any other error in the
+    // app — the farmer taps a red confirm button expecting something
+    // irreversible to happen, and with no message either way, there's no
+    // way to tell "it worked" from "it didn't" apart from checking back
+    // later. Whatever actually broke, this at least makes that visible
+    // and leaves the modal open to retry, instead of the record quietly
+    // staying exactly as it was.
+    showInfoModal('Something went wrong and this wasn\u2019t saved \u2014 '+((err&&err.message)||String(err))+'. Please try again.');
+  }
 }
 
 function wireView(){
@@ -12257,18 +11984,6 @@ function wireView(){
       reportExpandedKey=null;
       render();
     };
-    const doneTodayMoveOnBtn=document.getElementById('doneTodayMoveOn');
-    if(doneTodayMoveOnBtn) doneTodayMoveOnBtn.onclick=()=>{
-      const addedTodayIds=todaysActivity(reportDoneTodayFarmerFilter).addedToday.map(a=>a.id);
-      view='move'; cameFromSummary=false; moveDate=todayStr(); moveGps=null; moveSessionRecordId=null;
-      moveLocationVal=''; moveReasonVal=''; moveDirection='on'; moveDestCphVal='';
-      moveAnimalIds=addedTodayIds;
-      moveHistoryScope=null; moveHistoryExpanded=false; expandedMoveHistoryId=null;
-      moveWarningsSuppressed=false;
-      render();
-      queueMoveRiskWarnings(moveAnimalIds);
-      if(modal) renderModal();
-    };
     document.querySelectorAll('[data-togglereportmonth]').forEach(el=>{
       if(el.disabled) return;
       el.onclick=()=>{
@@ -12703,18 +12418,12 @@ Rules:
     // onclick handlers below), not any of the validation or save logic
     // itself.
     const saveNewAnimalFromForm=async()=>{
-      // Mgmt ID and Name are hidden entirely (not rendered) when
-      // identifying by EID only, per the farm setting — guard every
-      // lookup so saving doesn't depend on fields that aren't on screen.
-      const tagField=document.getElementById('f-tag');
-      const nameField=document.getElementById('f-name');
-      const tag = tagField ? tagField.value.trim() : '';
+      const tag=document.getElementById('f-tag').value.trim();
       const errEl=document.getElementById('err-tag');
       const errBirth=document.getElementById('err-birth');
       const errBreed=document.getElementById('err-breed');
       const errSex=document.getElementById('err-sex');
-      if(errEl) errEl.textContent='';
-      errBirth.textContent=''; errBreed.textContent=''; errSex.textContent='';
+      errEl.textContent=''; errBirth.textContent=''; errBreed.textContent=''; errSex.textContent='';
       const breedId=document.getElementById('f-breed').value;
       const sexChecked=document.querySelector('input[name="f-sex"]:checked');
       const birthRaw=document.getElementById('f-birth').value;
@@ -12723,8 +12432,8 @@ Rules:
       if(!sexChecked) missing.push('Sex');
       if(!birthRaw) missing.push('D.O.B');
       if(missing.length){ highlightFirstMissingField([['f-breed','Breed'],['sexM','Sex'],['f-birth','D.O.B']]); return null; }
-      if(tag && animals.some(x=>x.tag_number && (x.tag_number||'').toLowerCase()===tag.toLowerCase())){ if(errEl) errEl.textContent='That Mgmt ID is already in use.'; return null; }
-      const name=nameField ? nameField.value.trim() : '';
+      if(tag && animals.some(x=>x.tag_number && (x.tag_number||'').toLowerCase()===tag.toLowerCase())){ errEl.textContent='That Mgmt ID is already in use.'; return null; }
+      const name=document.getElementById('f-name').value.trim();
       const sex=sexChecked.value;
       const todayIso=new Date().toISOString().slice(0,10);
       if(birthRaw > todayIso){ errBirth.textContent='Birth date can’t be in the future.'; return null; }
@@ -12742,14 +12451,7 @@ Rules:
         id, tag_number:tag, eid:newAnimalEid, breed_id:breedId, sex, birth_date:birthDateIso, status:'active',
         purchase_price:purchasePrice, birth_weight_kg:birthWeight, weaned_weight_kg:weanedWeight,
         mother_id:newAnimalMotherId, mother_external_eid:newAnimalMotherExternalEid, father_id:newAnimalFatherId, father_external_eid:newAnimalFatherExternalEid, photo_data:newAnimalPhoto,
-        name:name||null, notes:notesRaw||null, updated_at:new Date().toISOString(), created_seq:nextSeq, is_cross:!!newAnimalIsCross,
-        // A passport is only ever handed out for an animal already
-        // registered with BCMS/CTS, so entering one via a passport scan
-        // is itself proof of that registration — mark it reported
-        // straight away instead of leaving the birth-registration
-        // reminder to fire for something that's already done.
-        bcms_birth_reported:newAnimalPassportScanned?true:null,
-        bcms_birth_reported_at:newAnimalPassportScanned?new Date().toISOString():null
+        name:name||null, notes:notesRaw||null, updated_at:new Date().toISOString(), created_seq:nextSeq, is_cross:!!newAnimalIsCross
       };
       // Animals are Phase 1 of the Supabase migration — once signed in and
       // linked to a farm, a new animal goes straight to the shared
@@ -12760,8 +12462,7 @@ Rules:
       if(authFarmId){
         const { error: insertErr } = await sb.from('animals').insert({ ...newAnimal, farm_id: authFarmId });
         if(insertErr){
-          if(errEl) errEl.textContent='Couldn\u2019t save to the farm database (check you have a signal, then try again) \u2014 '+insertErr.message;
-          else showInfoModal('Couldn\u2019t save to the farm database (check you have a signal, then try again) \u2014 '+insertErr.message);
+          errEl.textContent='Couldn\u2019t save to the farm database (check you have a signal, then try again) \u2014 '+insertErr.message;
           return null;
         }
       }
@@ -13139,27 +12840,6 @@ Rules:
     // ---- Farm details ----
     const farmDetailsHelpBtn=document.getElementById('farmDetailsHelp');
     if(farmDetailsHelpBtn) farmDetailsHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('Add as much detail about your farm/resources as possible. The app may then be able to suggest improvements/grants based on the info given e.g. types of field, size, soil type, altitude, lack of hedges, previous grants granted/declined etc.'); };
-    const landParcelsHelpBtn=document.getElementById('landParcelsHelp');
-    if(landParcelsHelpBtn) landParcelsHelpBtn.onclick=(e)=>{ e.stopPropagation(); showInfoModal('\u2022 On ruralpayments.service.gov.uk, go to Land > View parcels (or similar) and export/download your parcel list \u2014 an .xlsx or .csv with a column for parcel ID and total area.\n\n\u2022 Import it here rather than typing each field in below \u2014 this covers parcel ID, size and land cover, and is included in the farm summary export.\n\n\u2022 Re-importing replaces the whole list with whatever\u2019s in the new file, so use a fresh export next time your parcels change.\n\n\u2022 This is separate from the fields you describe below \u2014 add a field below only for the ones you want to record extra detail on (soil, drainage, hedges, schemes), not every parcel.'); };
-    const landParcelsFileInputEl=document.getElementById('landParcelsFileInput');
-    document.querySelectorAll('#landParcelsImportBtn').forEach(el=>el.onclick=(e)=>{ e.stopPropagation(); if(landParcelsFileInputEl) landParcelsFileInputEl.click(); });
-    if(landParcelsFileInputEl) landParcelsFileInputEl.onchange=(e)=>{
-      const file=e.target.files && e.target.files[0];
-      if(file) runLandParcelsImport(file);
-    };
-    const landParcelsToggleListBtn=document.getElementById('landParcelsToggleList');
-    if(landParcelsToggleListBtn) landParcelsToggleListBtn.onclick=(e)=>{ e.stopPropagation(); landParcelsListExpanded=!landParcelsListExpanded; render(); };
-    const landParcelsRemoveBtn=document.getElementById('landParcelsRemoveBtn');
-    if(landParcelsRemoveBtn) landParcelsRemoveBtn.onclick=(e)=>{
-      e.stopPropagation();
-      showConfirmModal('Remove all '+landParcels.length+' imported parcels? This doesn\u2019t affect anything on Rural Payments itself \u2014 you can re-import at any time.', async()=>{
-        landParcels=[]; landParcelsImportedAt=null; landParcelsSourceFilename=null; landParcelsListExpanded=false;
-        await persistAll();
-        logMsg('Removed the imported land parcel list.');
-        render();
-        showSaveToast('Removed');
-      }, null, 'Remove', 'Cancel');
-    };
     document.querySelectorAll('[data-fdcathelp]').forEach(el=>el.onclick=(e)=>{ e.stopPropagation(); showInfoModal(farmDetailTypeHelpText(el.dataset.fdcathelp)); });
     const fdToggle=(el)=>{
       const cat=el.dataset.toggleFdcat;
@@ -14396,47 +14076,6 @@ Rules:
     if(!readOnly) wirePhotoCaptureModal('medcabphoto', (dataUrl)=>{ medCabAddPhoto=dataUrl; updatePhotoPreview('medcabphoto', dataUrl); });
     document.getElementById('medcabadd-help').onclick=()=>{ showInfoModal(readOnly ? '\u2022 This medicine has been disposed of, so its record is read-only.\n\n\u2022 Size/Qty, cost, and remaining-at-disposal are all kept for your records.' : '\u2022 Photograph the medicine for Red Tractor proof.\n\n\u2022 Size/Qty is the total amount in this purchase \u2014 used to work out what\u2019s left as doses are given.\n\n\u2022 Cost is the total for this purchase, not per dose \u2014 cost/dose is worked out automatically when medicine is given.\n\n\u2022 Default withdrawal and dosage/kg are used to pre-fill those fields when this medicine is given to an animal.'); };
     const scanMedicineBoxBtn=document.getElementById('scanMedicineBoxBtn');
-    // Best-effort auto-classify: given whatever's currently in Product
-    // name, ask Groq what type of medicine it is and fill Type in if it's
-    // still blank. Shared by the scan handler (right after a photo fills
-    // in the product name) and the manual-entry path below (leaving the
-    // Product name field after typing) — a farmer typing the name by hand
-    // shouldn't have to separately go look up its category any more than
-    // one filled in by a scan should. Silently does nothing without AI
-    // configured, with no product name yet, or if Type's already got
-    // something in it (never overwrites a farmer's own entry).
-    const autoFillMedicineType=async()=>{
-      const nameEl=document.getElementById('medcab-name');
-      const typeEl=document.getElementById('medcab-type');
-      if(!nameEl || !typeEl) return null;
-      const name=nameEl.value.trim();
-      if(!name || typeEl.value.trim()) return null;
-      if(!(farmSettings.use_ai===true && farmSettings.groq_api_key)) return null;
-      const knownTypesNow=[...new Set(medicineTypes.filter(x=>!x.locked && x.type).map(x=>x.type))].sort();
-      const prevPlaceholder=typeEl.placeholder;
-      typeEl.placeholder='Looking up type\u2026';
-      try{
-        const type=await lookupMedicineTypeGroq(name, knownTypesNow);
-        // Re-check the fields haven't moved on under us while the request
-        // was in flight (name edited again, or Type filled in by hand).
-        if(type && !typeEl.value.trim() && nameEl.value.trim()===name){
-          typeEl.value=type;
-          return type;
-        }
-        return null;
-      }catch(e){
-        return null; // best-effort only — leave Type blank for the farmer rather than surfacing an error for something they didn't explicitly ask for
-      }finally{
-        typeEl.placeholder=prevPlaceholder;
-      }
-    };
-    const medcabNameInput=document.getElementById('medcab-name');
-    if(medcabNameInput) medcabNameInput.addEventListener('change', async()=>{
-      const guessed=await autoFillMedicineType();
-      if(guessed) logMsg('Guessed medicine type <b>'+escapeHtml(guessed)+'</b> \u2014 please check it\u2019s right.');
-    });
-    const medBoxScanHelpBtn=document.getElementById('medBoxScanHelp');
-    if(medBoxScanHelpBtn) medBoxScanHelpBtn.onclick=()=>{ showInfoModal('\u2022 Reads the printed text on the box or label \u2014 not the barcode/2D code itself \u2014 so make sure the printed Batch and Expiry are in shot, in focus, and the right way up.\n\n\u2022 Fills in Batch No. and Expiry date. Product name too, if it\u2019s printed on the same label \u2014 plenty of boxes only print that on the front of the box instead, so it\u2019s not always there to read.\n\n\u2022 Once Product name has something in it (from the scan, or typed in by hand), Type is looked up and filled in automatically if it\u2019s still blank \u2014 always check it before saving.\n\n\u2022 Always check what\u2019s filled in before saving \u2014 a smudged or angled photo can still misread a field.'); };
     if(scanMedicineBoxBtn) scanMedicineBoxBtn.onclick=()=>{
       if(!(farmSettings.use_ai===true && farmSettings.groq_api_key)){
         showInfoModal('Scanning a medicine box needs AI turned on with a Groq API key set up in Settings.', 'useai');
@@ -14455,11 +14094,6 @@ Rules:
             expEl.value=result.expiryDate;
             expEl.dispatchEvent(new Event('change'));
             filled.push('Expiry date'+(result.expiryWasMonthOnly?' (end of month shown)':''));
-          }
-          if(result.productName){
-            updateScanningOverlay('Checking medicine type\u2026');
-            const guessedType=await autoFillMedicineType();
-            if(guessedType) filled.push('Type (guessed \u2014 check it)');
           }
           if(filled.length){
             showSaveToast('Filled in from photo');
