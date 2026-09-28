@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-28a';
+const APP_BUILD_VERSION = '2026-09-28b';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-28a';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-28b',
+    date: '28 Sep 2026',
+    bullets: [
+      "Fodder cost now counts towards Profit, Market Value, the ROI report and the Sold price you enter \u2014 previously only purchase price and medicine were subtracted. The Profit screen shows the fodder share on its own line. Animals marked as sold before this update keep their old figure; only new ones pick up fodder."
+    ]
+  },
   {
     version: '2026-09-28a',
     date: '28 Sep 2026',
@@ -4104,7 +4111,7 @@ function medicineCostTotal(a){
   return medicineRecords.filter(r=>r.animal_id===a.id && r.cost!=null).reduce((s,r)=>s+r.cost,0);
 }
 function totalCost(a){
-  return (a.purchase_price||0) + medicineCostTotal(a);
+  return (a.purchase_price||0) + medicineCostTotal(a) + feedCostTotal(a.id);
 }
 function estimatedProfit(a){
   const mv=marketValue(a);
@@ -4220,8 +4227,18 @@ function allocateFeedCosts(opts){
   });
   return { byAnimal, byRecord, pending, unallocated };
 }
+// Profit/cost screens call feedCostTotal() once per animal (animal list,
+// ROI report, exit modal, ...), and allocateFeedCosts() itself is O(animals x
+// exhausted records) — recomputing it from scratch for every single animal
+// would make those screens O(n^2). _feedAllocCache holds one whole-farm
+// result and is cleared at the top of render() (search
+// invalidateFeedAllocCache) so it can never go stale within a render, but is
+// reused by every totalCost()/estimatedProfit() call inside that render.
+let _feedAllocCache=null;
+function invalidateFeedAllocCache(){ _feedAllocCache=null; }
 function feedCostTotal(animalId){
-  const r=allocateFeedCosts().byAnimal.get(animalId);
+  if(!_feedAllocCache) _feedAllocCache=allocateFeedCosts();
+  const r=_feedAllocCache.byAnimal.get(animalId);
   return r ? r.total : 0;
 }
 // ==== FODDER COST ALLOCATION END ====
@@ -4387,6 +4404,7 @@ function updateStats(){
 }
 
 function render(){
+  invalidateFeedAllocCache(); // data may have changed since the last render (see feedCostTotal)
   if(isLockedOut() && view!=='locked'){ view='locked'; }
   if(!suppressHistoryPush && lastSnapshot && lastSnapshot.view!==view){
     navStack.push(lastSnapshot);
@@ -4641,7 +4659,7 @@ const WALKTHROUGH_STEPS=[
       {id:'wt-injury', icon:'bandage', label:'Injury', text:'Log the body part affected and a severity level. This feeds into the animal\u2019s Health Score. Add a photo if you can to help track progression of the injury. Always get a vet\u2019s opinion for anything serious. Once it\u2019s healed, mark the injury as recovered. This tile is coloured red if there\u2019s a current injury.'},
       {id:'wt-move', icon:'pin', label:'Move', text:'Move animal on/off farm, or use In for a move between fields on the farm \u2014 no CPH, and no TB/withdrawal check or BCMS report needed since the animal never leaves the farm. Highlighted red if last move was off-farm. A red syringe icon flags any animal still in medicine withdrawal or missing a TB test on an on/off move \u2014 shown both when picking animals to add and once they\u2019re on the move, so it\u2019s caught before the animal leaves rather than only when it\u2019s later marked sold.'},
       {id:'wt-weigh', icon:'scale', label:'Weigh / BCS', text:'Regular weighing tracks growth and feeds directly into an animal\u2019s Health Score and Market Value. Body Condition Score (BCS) is a 1\u20135 scale judged by eye and feel \u2014 1 is very thin, 5 is very fat, and most animals should sit around the middle. Weigh one animal at a time: pick it from the list or scan its tag, enter weight and BCS, and save. You\u2019ll be offered the next animal straight away, so a batch of animals can be worked through quickly. Highlighted according to BCS score and weight trend.'},
-      {id:'wt-marketvalue', iconHtml:'£', label:'Market Value', text:'Latest weight \u00d7 breed\u2019s £/kg that\u2019s saved in Settings. Costs are taken off this value to calculate the profit (purchase price and medicine given). This tile is coloured green if in profit, red if purchase + medicine given is more than current market value, grey if never weighed.'},
+      {id:'wt-marketvalue', iconHtml:'£', label:'Market Value', text:'Latest weight \u00d7 breed\u2019s £/kg that\u2019s saved in Settings. Costs are taken off this value to calculate the profit (purchase price, medicine given, and a share of fodder cost). This tile is coloured green if in profit, red if those costs are more than current market value, grey if never weighed.'},
       {id:'wt-health', icon:'heart', label:'Health', text:'Overall health score based on several factors and highlighted accordingly.'},
     ],
   },
@@ -7503,6 +7521,7 @@ function renderProfitScore(){
   const conf=confidenceScore(a);
   const mv=marketValue(a);
   const medCost=medicineCostTotal(a);
+  const feedCost=feedCostTotal(a.id);
   const profit=estimatedProfit(a);
   return `
     <div class="appbar"><button class="back" data-genericback="1">${icon('back')}</button><span>${headerIdName(a,26)}</span><span></span></div>
@@ -7516,6 +7535,8 @@ function renderProfitScore(){
       <div style="border-top:1px solid var(--line);margin-top:14px;"></div>
       <div class="row" style="cursor:default;"><div style="color:var(--red);font-weight:700;display:flex;align-items:center;gap:6px;">${poundIcon()} Purchase price</div><div style="color:var(--red);font-weight:700;">${fmtGBPSmart(a.purchase_price||0)}</div></div>
       <div class="row" data-gotoanimalmedicine="1" style="cursor:pointer;"><div style="color:var(--red);font-weight:700;display:flex;align-items:center;gap:6px;">${poundIcon()} Medicine</div><div style="color:var(--red);font-weight:700;">${fmtGBPSmart(medCost)}</div></div>
+      <div class="row" style="cursor:default;"><div style="color:var(--red);font-weight:700;display:flex;align-items:center;gap:6px;">${poundIcon()} Fodder</div><div style="color:var(--red);font-weight:700;">${fmtGBPSmart(feedCost)}</div></div>
+      ${_feedAllocCache&&_feedAllocCache.pending.length?`<div style="font-size:12.5px;color:var(--grey);margin:-2px 0 4px 42px;">${_feedAllocCache.pending.length} fodder record${_feedAllocCache.pending.length===1?'':'s'} still in use, not counted until marked exhausted</div>`:''}
 
       <div style="border-top:2px solid var(--line);margin-top:10px;padding-top:14px;display:flex;justify-content:space-between;align-items:center;">
         <span style="font-size:22px;font-weight:800;color:${profit!=null&&profit<0?'var(--red)':'var(--green)'};">Profit</span>
@@ -10411,7 +10432,7 @@ function renderModal(){
         <span id="soldProfitDisplay" style="font-size:17px;font-weight:700;"></span>
       </div>
       <div style="font-size:14.5px;color:var(--grey);margin-top:8px;">Estimated market value: ${fmtGBPSmart(estValue)}</div>
-      <div style="font-size:14.5px;color:var(--red);">Purchase price &amp; medicine costs: ${fmtGBPSmart(costs)}</div>
+      <div style="font-size:14.5px;color:var(--red);">Purchase price, medicine &amp; fodder costs: ${fmtGBPSmart(costs)}</div>
       `: isSwapped?`
       <label style="margin-top:12px;font-size:15px;">Money</label>
       <div style="display:flex;align-items:center;gap:6px;width:50%;"><span style="font-size:19px;font-weight:700;">&pound;</span><input type="text" inputmode="decimal" id="exitValueInput" value="" placeholder="0.00" style="flex:1;font-size:18px;"></div>
@@ -12066,7 +12087,7 @@ function wireView(){
       const base = reportType==='donetoday'
         ? 'Counts everything recorded against today\u2019s date across the whole farm \u2014 weighing, moves, medicine, injuries, damage, fodder, and animals added or exited. Tap a row to see exactly what made it up. Use "Done by" to filter to one farm hand \u2014 this only works for entries logged while that person was selected via Switch user, so make sure everyone logs in as themselves rather than leaving it on Admin.'
         : 'Tap a row to see the detail behind it. Tap an animal\u2019s name to go straight to its Animal Details, or tap its value to see the full profit breakdown.';
-      const extra = reportType==='roi' ? '\n\nIncludes every active animal with a current weight, using total cost (purchase price if bought, plus medicine to date) against current market value. Best performers first. A home-bred animal with no purchase price and no medicine cost shows \u2014 for ROI rather than a percentage, since a return can\u2019t be calculated against a \u00a30 cost \u2014 its full value still counts as profit.'
+      const extra = reportType==='roi' ? '\n\nIncludes every active animal with a current weight, using total cost (purchase price if bought, plus medicine and its share of fodder to date) against current market value. Best performers first. A home-bred animal with no purchase price, medicine or fodder cost shows \u2014 for ROI rather than a percentage, since a return can\u2019t be calculated against a \u00a30 cost \u2014 its full value still counts as profit.'
         : reportType==='realized' ? '\n\nOnly animals actually marked as sold, died, swapped or stolen count here, using the real profit/loss figure entered (or corrected) at the time \u2014 not an estimate. A loss counts as negative, so the monthly and 6-month totals show the true net change. Animals exited before this feature was added won\u2019t have a figure recorded and are left out rather than assumed to be \u00a30.'
         : reportType==='sellyes' ? '\n\nPress and hold an animal to select several at once, then tap Move in the footer to send them all to market together.'
         : reportType==='feedcost' ? '\n\nUse Filter in the footer to narrow the chart and monthly totals down to one fodder type.' : '';
@@ -12272,7 +12293,7 @@ Rules:
     };
   }
   if(view==='profitScore'){
-    document.getElementById('profit-help').onclick=()=>{ showInfoModal('Market value is the animals latest weight * £/kg saved in Settings.\nExpenses of purchase price and medicine are totalled and subtracted from the Market Value to give the profit.', 'breeds'); };
+    document.getElementById('profit-help').onclick=()=>{ showInfoModal('Market value is the animals latest weight * £/kg saved in Settings.\nPurchase price, medicine and this animal\u2019s share of fodder cost (by the days it\u2019s been on the farm) are totalled and subtracted from the Market Value to give the profit.', 'breeds'); };
     const gotoMed=document.querySelector('[data-gotoanimalmedicine]');
     if(gotoMed) gotoMed.onclick=()=>{ healthTarget=selectedId; view='medicine'; render(); };
     document.querySelectorAll('[data-factorinfo]').forEach(el=>el.onclick=()=>{
