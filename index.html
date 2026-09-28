@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-28b';
+const APP_BUILD_VERSION = '2026-09-28c';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-28b';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-28c',
+    date: '28 Sep 2026',
+    bullets: [
+      "Fixed a data-loss risk: on sign-in the app now pages through Supabase properly instead of a single request that silently cut off at 1,000 rows. A farm with more than 1,000 events, weights, medicine records etc. would previously have lost some of them from the app with no warning \u2014 this affects nobody on the pilot yet, but was a ticking problem as farms grow."
+    ]
+  },
   {
     version: '2026-09-28b',
     date: '28 Sep 2026',
@@ -1288,52 +1295,76 @@ async function resolveFarmMembership(){
 // farm_members row became possible (Si's admin access) — without this,
 // a superuser viewing one farm would silently see every farm's records
 // merged together.
+// Supabase (PostgREST) caps any single .select() at 1,000 rows by default,
+// silently — a farm with more than 1,000 events, weights, etc. would lose
+// its oldest (or, with no ORDER BY, an arbitrary) slice of them with no
+// error at all. fetchAllRows pages through with .range() until a page
+// comes back short of PAGE_SIZE, ordered by `rev` (see the sync-rev
+// migration) so paging is gapless and stable even if rows are being
+// written while this runs. Every farm-scoped, syncable table now has
+// `rev`, so this is safe to use in place of a plain .select('*') anywhere
+// in loadFarmData. Returns {data, error} in the same shape as a direct
+// Supabase call, so existing call sites barely change.
+const FETCH_PAGE_SIZE=1000;
+async function fetchAllRows(table, farmId, opts={}){
+  const rows=[]; let from=0;
+  for(;;){
+    let q=sb.from(table).select('*').eq('farm_id', farmId).order('rev', {ascending:true}).range(from, from+FETCH_PAGE_SIZE-1);
+    const {data, error}=await q;
+    if(error) return {data:null, error};
+    rows.push(...(data||[]));
+    if(!data || data.length<FETCH_PAGE_SIZE) break;
+    from+=FETCH_PAGE_SIZE;
+  }
+  return {data:rows, error:null};
+}
+
 async function loadFarmData(farmId){
-  const { data: remoteAnimals, error: animErr } = await sb.from('animals').select('*').eq('farm_id', farmId).order('created_seq', {ascending:true});
+  const { data: remoteAnimals, error: animErr } = await fetchAllRows('animals', farmId);
   if(animErr){ authError = animErr.message; return; }
   animals = remoteAnimals || [];
-  const { data: remoteWeights, error: weightErr } = await sb.from('weights').select('*').eq('farm_id', farmId);
+  const { data: remoteWeights, error: weightErr } = await fetchAllRows('weights', farmId);
   if(weightErr){ authError = weightErr.message; return; }
   weights = remoteWeights || [];
-  const { data: remoteDamage, error: damageErr } = await sb.from('damage_records').select('*').eq('farm_id', farmId);
+  const { data: remoteDamage, error: damageErr } = await fetchAllRows('damage_records', farmId);
   if(damageErr){ authError = damageErr.message; return; }
   damageRecords = remoteDamage || [];
-  const { data: remoteInjuries, error: injuryErr } = await sb.from('injury_records').select('*').eq('farm_id', farmId);
+  const { data: remoteInjuries, error: injuryErr } = await fetchAllRows('injury_records', farmId);
   if(injuryErr){ authError = injuryErr.message; return; }
   injuryRecords = remoteInjuries || [];
-  const { data: remoteMoves, error: moveErr } = await sb.from('move_records').select('*').eq('farm_id', farmId);
+  const { data: remoteMoves, error: moveErr } = await fetchAllRows('move_records', farmId);
   if(moveErr){ authError = moveErr.message; return; }
   moveRecords = remoteMoves || [];
-  const { data: remoteMeds, error: medErr } = await sb.from('medicine_records').select('*').eq('farm_id', farmId);
+  const { data: remoteMeds, error: medErr } = await fetchAllRows('medicine_records', farmId);
   if(medErr){ authError = medErr.message; return; }
   medicineRecords = remoteMeds || [];
-  const { data: remoteFeed, error: feedErr } = await sb.from('feed_records').select('*').eq('farm_id', farmId);
+  const { data: remoteFeed, error: feedErr } = await fetchAllRows('feed_records', farmId);
   if(feedErr){ authError = feedErr.message; return; }
   feedRecords = remoteFeed || [];
-  const { data: remoteFeedUsage, error: feedUsageErr } = await sb.from('feed_usage_records').select('*').eq('farm_id', farmId);
+  const { data: remoteFeedUsage, error: feedUsageErr } = await fetchAllRows('feed_usage_records', farmId);
   if(feedUsageErr){ authError = feedUsageErr.message; return; }
   feedUsageRecords = remoteFeedUsage || [];
 
-  const { data: remoteBreeds, error: breedErr } = await sb.from('breeds').select('*').eq('farm_id', farmId);
+  const { data: remoteBreeds, error: breedErr } = await fetchAllRows('breeds', farmId);
   if(breedErr){ authError = breedErr.message; return; }
   breeds = remoteBreeds || [];
-  const { data: remoteBreedPriceHistory, error: bphErr } = await sb.from('breed_price_history').select('*').eq('farm_id', farmId);
+  const { data: remoteBreedPriceHistory, error: bphErr } = await fetchAllRows('breed_price_history', farmId);
   if(bphErr){ authError = bphErr.message; return; }
   breedPriceHistory = remoteBreedPriceHistory || [];
-  const { data: remoteFeedTypes, error: feedTypeErr } = await sb.from('feed_types').select('*').eq('farm_id', farmId);
+  const { data: remoteFeedTypes, error: feedTypeErr } = await fetchAllRows('feed_types', farmId);
   if(feedTypeErr){ authError = feedTypeErr.message; return; }
   feedTypes = remoteFeedTypes || [];
-  const { data: remoteMedTypes, error: medTypeErr } = await sb.from('medicine_types').select('*').eq('farm_id', farmId);
+  const { data: remoteMedTypes, error: medTypeErr } = await fetchAllRows('medicine_types', farmId);
   if(medTypeErr){ authError = medTypeErr.message; return; }
   medicineTypes = remoteMedTypes || [];
   ensureTbTestMedicineType(true);
-  const { data: remoteFarmersVets, error: fvErr } = await sb.from('farmers_vets').select('*').eq('farm_id', farmId);
+  const { data: remoteFarmersVets, error: fvErr } = await fetchAllRows('farmers_vets', farmId);
   if(fvErr){ authError = fvErr.message; return; }
   farmersVets = remoteFarmersVets || [];
   // Farm details — deliberately NOT fatal on error (unlike the tables above):
   // this is an optional, newer table, so if it's ever unavailable the rest
   // of the farm should still load, keeping whatever's cached on the device.
-  const { data: remoteFarmDetails, error: fdErr } = await sb.from('farm_details').select('*').eq('farm_id', farmId);
+  const { data: remoteFarmDetails, error: fdErr } = await fetchAllRows('farm_details', farmId);
   if(!fdErr) farmDetails = remoteFarmDetails || [];
   else console.warn('farm_details load failed:', fdErr.message);
   // Latest Farm Opportunities run — optional, same non-fatal treatment.
@@ -1375,7 +1406,7 @@ async function loadFarmData(farmId){
   // holding its own chronological array, so it's regrouped here on the
   // way in. created_at ascending keeps each animal's history in the
   // order it actually happened.
-  const { data: remoteEvents, error: eventsErr } = await sb.from('animal_events').select('*').eq('farm_id', farmId).order('created_at', {ascending:true});
+  const { data: remoteEvents, error: eventsErr } = await fetchAllRows('animal_events', farmId);
   if(eventsErr){ authError = eventsErr.message; return; }
   events = {};
   (remoteEvents||[]).forEach(e=>{
@@ -1383,7 +1414,7 @@ async function loadFarmData(farmId){
     events[e.animal_id].push({id:e.id, event_type:e.event_type, from_status:e.from_status, to_status:e.to_status, reason:e.reason, note:e.note, created_at:e.created_at, farmer_id:e.farmer_id});
   });
 
-  const { data: remoteBreeding, error: breedingErr } = await sb.from('breeding_records').select('*').eq('farm_id', farmId);
+  const { data: remoteBreeding, error: breedingErr } = await fetchAllRows('breeding_records', farmId);
   if(breedingErr){ authError = breedingErr.message; return; }
   breedingRecords = remoteBreeding || [];
 }
