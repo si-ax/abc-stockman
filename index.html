@@ -300,7 +300,7 @@
 // Bumped by hand every time a new build is handed over in chat — check this
 // against what's quoted in the chat message to confirm the phone has
 // actually picked up the latest version (not a stale cached one).
-const APP_BUILD_VERSION = '2026-09-28e';
+const APP_BUILD_VERSION = '2026-09-28f';
 
 // A running list of what changed in each build, shown to the user under
 // Settings > What's new. Newest entry first. Add a new entry here by hand
@@ -308,6 +308,13 @@ const APP_BUILD_VERSION = '2026-09-28e';
 // handed over (not every internal iteration) — keep bullets short and
 // written for the farmer, not the changelog-as-commit-log habit.
 const APP_CHANGELOG = [
+  {
+    version: '2026-09-28f',
+    date: '28 Sep 2026',
+    bullets: [
+      "Fixed the new Weigh / BCS Filter button doing nothing when tapped \u2014 its click handler was only ever wired up on the Animal List screen. It also now looks like a proper button, matching Filter on the Animal List."
+    ]
+  },
   {
     version: '2026-09-28e',
     date: '28 Sep 2026',
@@ -7819,7 +7826,7 @@ function renderWeigh(){
       </div>
       ${footerBar([
         {id:'weigh-help', icon:'help', label:'Help'},
-        {id:'weigh-filter', icon:'filter', label:(filterBreedId||filterOffFarm||filterBcs!=null||filterHealth||filterUnweighed60||filterTbOverdue||filterOpenInjury)?'Filter \u25cf':'Filter'},
+        {id:'weigh-filter', icon:'filter', label:(filterBreedId||filterOffFarm||filterBcs!=null||filterHealth||filterUnweighed60||filterTbOverdue||filterOpenInjury)?'Filter \u25cf':'Filter', primary:true},
         {id:'weigh-tag', icon:'camera', label:'Scan', primary:true},
         {id:'weigh-home', icon:'home', label:'Home', home:true},
       ])}`;
@@ -11595,8 +11602,6 @@ function wireView(){
     };
     const herdFilterBtn=document.getElementById('herd-filter');
     if(herdFilterBtn) herdFilterBtn.onclick=()=>{ filterModalContext='herd'; showFilterModal=true; render(); };
-    const weighFilterBtn=document.getElementById('weigh-filter');
-    if(weighFilterBtn) weighFilterBtn.onclick=()=>{ filterModalContext='weigh'; showFilterModal=true; render(); };
     const herdScanBtn=document.getElementById('herd-scan');
     if(herdScanBtn) herdScanBtn.onclick=()=>{ performTagScan('lookup', null); };
     const herdTbTestBtn=document.getElementById('herd-tbtest');
@@ -12401,6 +12406,8 @@ Rules:
     });
   }
   if(view==='weigh'){
+    const weighFilterBtn=document.getElementById('weigh-filter');
+    if(weighFilterBtn) weighFilterBtn.onclick=()=>{ filterModalContext='weigh'; showFilterModal=true; render(); };
     const inlineSearch=document.getElementById('weighInlineSearch');
     if(inlineSearch) inlineSearch.oninput=(e)=>{
       weighInlineSearchTerm=e.target.value;
